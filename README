@@ -1,0 +1,81 @@
+These utilities can be used to sniff traffic between a GL84x scanner and
+Windows, running in a virtual machine on a Linux host.
+They depend on the usbmon facility in the Linux kernel.
+
+
+* dumpscanner.c: Stores all traffic to and from the scanner in a file.
+Using /dev/usbmon*, it can capture both control and bulk data.
+
+The vendor and product ids of your scanner and the name of the output file
+are changed by editing the source code. When compiled, run as root to
+capture data, hit Ctrl-C to stop:
+
+$gcc dumpscanner.c -o dumpscanner
+$sudo ./dumpscanner
+[sudo] password for <user>:
+Found device: bus 2, device 3
+
+[This is where you run the scanner from the virtual machine]
+
+^C
+Stopped by user. Processed 123456 events, 0 dropped.
+
+
+* parsedump.pl: Parses the USB request blocks and prints them
+as commands to/replies from the GL84x controller.
+
+$./parsedump file.log
+[...]
+14717   wr_r 5c <- 00 -- GMMADDR = 0,
+14729   wr_r 5b <- 50 -- MTRTBL = 1, GMMADDR = 4096,
+14737   wr_r 5c <- 00 -- GMMADDR = 4096,
+14757   wr_r 28 <- -- 01 00 82 00 fe 01 00 00
+14765   wr_b => 510 bytes @ 0x783d
+14769   wr_r 5b <- 00 -- MTRTBL = 0, GMMADDR = 0,
+14777   wr_r 5c <- 00 -- GMMADDR = 0,
+14789   wr_r 21 <- 12 -- STEPNO = 18,
+14797   wr_r 69 <- 0a -- FSHDEC = 10,
+14815   rd_r 3d -> 00 -- FEEDL = 126,
+14835   rd_r 3e -> 00 -- FEEDL = 126,
+14855   rd_r 3f -> 7e -- FEEDL = 126,
+[...]
+
+Column 1: Number of milliseconds since first URB in the log.
+Column 2 onwards: scanner command/bulk transfer
+
+wr_r <reg> <- <val>: write <val> to register <reg>
+rd_r <reg> -> <val>: read <reg> and get <val> back
+
+The names of the device registers affected by the read or write, and
+their content, is printed after the '--'.
+
+wr_r <reg> <- -- <val1> [<val2>...]: write several values to <reg>
+
+wr_b => <length> bytes @ <offset>: bulk write
+rd_b => <length> bytes @ <offset>: bulk read
+
+The data, <length> bytes is stored in the logfile at <offset>.
+
+x: Unhandled urb. The file offset to the usbmon URB header struct
+is printed after the at sign.
+
+This format will change to something that needs less explaining,
+but it works for me at the moment.
+
+
+* dumptbl.sh: A one-line shell script that can dump motor acceleration
+and gamma tables (16-bit data) from the raw log as a list of decimal numbers,
+for easy import into e.g gnuplot or OpenOffice.org calc.
+
+dumptbl.sh <offset> <length>
+
+$./dumptbl.sh 0x783d 510 > motor_table.csv
+$cat motor_table.csv
+24576
+24576
+15572
+11826
+[...]
+
+Note how the offset and length are found parsedump printout above.
+(Look at the wr_b command.)
