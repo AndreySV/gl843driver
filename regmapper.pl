@@ -241,33 +241,51 @@ sub Regmapper::dump_devregs_c
 	foreach my $name (@regnames) { $name = "\"$name\""; }
 	my $names_array = $self->print_array_c("\t", 50, @regnames);
 
+	# Count IO registers
+
+	foreach my $name (sort(keys(%$devregs))) {
+		my %h = %$devregs;
+		my $devreg = $h{$name};
+		my @dev_regbm = @{$devreg->regbm};
+		foreach my $regbm (@dev_regbm) {
+			my $addr = hex($regbm->io_addr);
+			if ($addr > $max_ioaddr) {
+				$max_ioaddr = $addr;
+			}
+		}
+	}
+
 	# Build register map
 
 	my $regmap_struct = "";
+
+	# Build IO register map (trivial 1:1 mapping)
+	for (my $addr = 0; $addr <= $max_ioaddr; $addr++) {
+		push(@regmap_indices, $regmap_index);
+		$regmap_struct = $regmap_struct .
+			sprintf ("{ 0x%x, 0x%x, 0, 0xff },\n\t", $addr, $addr);
+		$regmap_index++;
+	}
+
+	# Build device register map
 	foreach my $name (sort(keys(%$devregs))) {
 		my %h = %$devregs;
 		my $devreg = $h{$name};
 		my @dev_regbm = @{$devreg->regbm};
 		push(@regmap_indices, $regmap_index);
 		foreach my $regbm (@dev_regbm) {
-			my $dlsb = $regbm->dev_lsb;
-			my $dmsb = $regbm->dev_msb;
-			my $addr = $regbm->io_addr;
-			my $iolsb = $regbm->io_lsb;
-			my $iomsb = $regbm->io_msb;
+			my $addr = hex($regbm->io_addr);
+			my $mask =  ((1 << ($regbm->io_msb+1)) - 1)
+				 & ~((1 << $regbm->io_lsb) - 1);
+			my $shift = $regbm->io_msb - $regbm->dev_msb;
 
 			$regmap_struct = $regmap_struct .
-				"{ $DEVNAME\_$name, $dmsb, 0x$addr, " .
-				"$iomsb, $iolsb },\n\t";
-
-			my $a = hex($addr);
-			if ($a > $max_ioaddr) {
-				$max_ioaddr = $a;
-			}
+				sprintf ("{ $DEVNAME\_%s, 0x%x, %d, 0x%02x },\n\t",
+					$name, $addr, $shift, $mask);
 			$regmap_index++;
 		}
 	}
-	$regmap_struct = $regmap_struct . "{ -1, 0, 0, 0, 0 }";
+	$regmap_struct = $regmap_struct . "{ -1, 0, 0, 0 }";
 
 	# Build register map index
 
@@ -304,19 +322,20 @@ sub Regmapper::dump_devregs_c
 
 struct regset_ent
 {
-	int reg;		/* Device register - enum $devname\_devreg */
+	int reg;		/* Device register - enum $devname\_reg */
 	unsigned int val;
 };
 
 /* Device register to IO register mapping */
 struct regmap_ent
 {
-    int devreg;			/* Device register - enum $devname\_devreg */
-    char msb;			/* devreg MSB of this mapping. It is not the
-				 * MSB of the whole devreg, only the part
-				 * defined in the io register below. */
-    int ioreg;			/* IO register address */
-    char iomsb, iolsb;		/* ioreg MSB and LSB */
+	int devreg;	/* Device register - enum $devname\_reg */
+	int ioreg;	/* IO register address */
+	char shift;	/* IO register shift
+			 * When storing devreg in ioreg:
+			 * > 0: shift left, < 0: shift right
+			 * When fetching devreg from ioreg: vice versa. */
+	int mask;	/* IO register bitmask */
 };
 
 /* IO register */
@@ -328,13 +347,20 @@ struct ioregister
 	int val;	/* Current value in the I/O register */
 };
 
-/* Enumeration of $DEVNAME device registers. */
+/* Enumeration of $DEVNAME device and IO registers. */
 
-enum $devname\_devreg
+enum $devname\_reg
 {
+	/* Min/max $DEVNAME IO register addresses */
+
+	$DEVNAME\_MIN_IOREG = 0,
+	$DEVNAME\_MAX_IOREG = $max_ioaddr,
+
+	/* Device registers */
+
 	$enum_array
 
-	$DEVNAME\_DEVREG_MAX /* not a register */
+	$DEVNAME\_MAX_DEVREG /* not a register */
 };
 
 #ifdef $DEVNAME\_PRIVATE /* For private use in $devname\_low.c */
@@ -344,18 +370,18 @@ const char *$devname\_devreg_names[] = {
 	$names_array
 };
 
-/* $DEVNAME device register --> IO register map. */
+/* $DEVNAME device register --> IO register map.
+ * All IO registers are mapped onto themselves (1:1 mapping)
+ * followed by the device to IO register map.
+ */
 const struct regmap_ent $devname\_regmap[] = {
 	$regmap_struct
 };
 
-/* Start locations in $devname\_regmap[] of the $devname\_devreg enumerations. */
+/* Start locations in $devname\_regmap[] of the $devname\_reg enumerations. */
 const int $devname\_regmap_index[] = {
 	$index_array
 };
-
-/* Max $DEVNAME IO register address */
-#define $DEVNAME\_MAX_IOREG 175
 
 #endif /* $DEVNAME\_PRIVATE */
 
@@ -445,6 +471,3 @@ sub Regmapper::get_devreg_val
 
 	return $val;
 }
-
-#my $x = new Regmapper("gl843_regmap.txt");
-#$x->dump_devregs_c("gl843");
