@@ -47,7 +47,7 @@ wr_r <reg> <- <val>: write <val> to register <reg>
 rd_r <reg> -> <val>: read <reg> and get <val> back
 
 The names of the device registers affected by the read or write, and
-their content, is printed after the '--'.
+their content, are printed after the '--'.
 
 wr_r <reg> <- -- <val1> [<val2>...]: write several values to <reg>
 
@@ -77,5 +77,5 @@ $cat motor_table.csv
 11826
 [...]
 
-Note how the offset and length are found parsedump printout above.
+Note that the offset and length are found in the parsedump printout above.
 (Look at the wr_b command.)
