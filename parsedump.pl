@@ -25,15 +25,6 @@ require("regmapper.pl");
 
 my $regmap = new Regmapper("gl843_regmap.txt");
 
-struct( parsed_urb => {
-	t => '$',
-	cmd => '$',
-	reg => '$',
-	len => '$',
-	buf => '$',
-	expects => '$',		# Expected next command
-});
-
 sub print_reg
 {
 	my ($reg, $val) = @_;
@@ -98,14 +89,14 @@ sub read_log
 			}
 			when('w') { # Write byte to scanner IO register
 				my ($reg, $val) = byte2hex(unpack("CC", $data));
-				printf("$ts\twr_r $reg <- $val -- ");
+				printf("$ts wr_r $reg <- $val -- ");
 				print_reg($reg, $val);
 			}
 			when('s') { # Select scanner IO register
 				$sel_reg = byte2hex(unpack("C", $data));
 			}
 			when('d') { # Write bytes to selected scanner IO register
-				printf("$ts\twr_r $sel_reg <- ");
+				printf("$ts wr_r $sel_reg <- ");
 				if ($blen < 17) {
 					printf("-- " . join(" ",
 						byte2hex(unpack("C*", $data))));
@@ -118,33 +109,33 @@ sub read_log
 				# Print nothing
 			}
 			when('W') { # Send bulk data to scanner
-				printf("$ts\twr_b => $blen bytes @ 0x%x\n", $offset);
+				printf("$ts wr_b => $blen bytes @ 0x%x\n", $offset);
 			}
 			when('a') { # Scanner returns data
 				if ($prev_cmd eq 'r' && $sel_reg ne '6d') {
 					# Print register read
 					my $val = byte2hex(unpack("C", $data));
-					printf("$ts\trd_r $sel_reg -> $val -- ");
+					printf("$ts rd_r $sel_reg -> $val -- ");
 					print_reg($sel_reg, $val);
 				} elsif ($prev_cmd eq 'r' && $sel_reg eq '6d') {
 					# Don't print register 6d
 					# where the Canoscan 4400F Win32 driver
 					# polls the scanner buttons.
 				} else {
-					printf("$ts\trd_c => $blen bytes @ 0x%x\n", $offset);
+					printf("$ts rd_c => $blen bytes @ 0x%x\n", $offset);
 				}
 			}
 			when('b') { # Scanner acks receiving data
 				# Print nothing
 			}
 			when('A') { # Scanner returns bulk data
-				printf("$ts\trd_b => $blen bytes @ 0x%x\n", $offset);
+				printf("$ts rd_b => $blen bytes @ 0x%x\n", $offset);
 			}
 			when('B') { # Scanner acks receiving bulk data
 				# Print nothing
 			}
 			when('x') { # Unhandled URB
-				printf("$ts\tx (unhandled URB) @ 0x%x\n", $offset);
+				printf("$ts x (unhandled URB) @ 0x%x\n", $offset);
 			}
 		}
 		$prev_cmd = $cmd;
