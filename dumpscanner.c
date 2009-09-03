@@ -261,6 +261,21 @@ int process_urb(struct usbmon_packet *hdr, unsigned char *data, FILE *file)
 		}
 	}
 	if (cmd == SCAN_UNDEF) {
+		fprintf(stderr, "Unknown URB: %c%c%c:%d",
+			ev, type, dir, ep);
+		if (has_setup) {
+			int rtype = hdr->s.setup[0];
+			int req = hdr->s.setup[1];
+			int val = (hdr->s.setup[3] << 8) | hdr->s.setup[2];
+			int idx = (hdr->s.setup[5] << 8) | hdr->s.setup[4];
+			int len = (hdr->s.setup[7] << 8) | hdr->s.setup[6];
+
+			fprintf(stderr, " s %02x %02x %04x %04x %04x",
+				rtype, req, val, idx, len);
+
+			fprintf(stderr, " = 0x%02x", *data);
+		}
+		fprintf(stderr, "\n");
 		/* Unhandled URB, just save the usbmon packet header */
 		buf = (uint8_t *) hdr;
 		blen = sizeof(*hdr);
