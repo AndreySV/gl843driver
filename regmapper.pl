@@ -197,6 +197,173 @@ sub Regmapper::dump_devregs
 	}
 }
 
+sub Regmapper::print_array_c
+{
+	my ($self, $indent, $width, @array) = @_;
+	my $len = 0;
+	my $ret = "";
+
+	foreach my $s (@array) {
+		$len = $len + length("$s, ");
+		if ($len > $width) {
+			$ret = $ret . "\n$indent";
+			$len = 0;
+		}
+		$ret = $ret . "$s, ";
+	}
+	return $ret;
+}
+
+# Dump register definitions and map as C source code
+sub Regmapper::dump_devregs_c
+{
+	my ($self, $devname) = @_;
+	my $DEVNAME = $devname;
+	$DEVNAME =~ tr/a-z/A-Z/;
+
+	my $devregs = $self->{_devregs};
+	my $len = 0;
+	my $regmap_size = 0;
+	my $max_ioaddr = 0;
+
+	my $regmap_index = 0;
+	my @regmap_indices = ();# Index of first regmap_ent for each register
+
+	# Build device register enums
+
+	my @enums = sort(keys(%$devregs));
+	foreach my $name (@enums) { $name = "$DEVNAME\_$name"; }
+	my $enum_array = $self->print_array_c("\t", 50, @enums);
+
+	# Build device register name strings
+
+	my @regnames = sort(keys(%$devregs));
+	foreach my $name (@regnames) { $name = "\"$name\""; }
+	my $names_array = $self->print_array_c("\t", 50, @regnames);
+
+	# Build register map
+
+	my $regmap_struct = "";
+	foreach my $name (sort(keys(%$devregs))) {
+		my %h = %$devregs;
+		my $devreg = $h{$name};
+		my @dev_regbm = @{$devreg->regbm};
+		push(@regmap_indices, $regmap_index);
+		foreach my $regbm (@dev_regbm) {
+			my $dlsb = $regbm->dev_lsb;
+			my $dmsb = $regbm->dev_msb;
+			my $addr = $regbm->io_addr;
+			my $iolsb = $regbm->io_lsb;
+			my $iomsb = $regbm->io_msb;
+
+			$regmap_struct = $regmap_struct .
+				"{ $DEVNAME\_$name, $dmsb, 0x$addr, " .
+				"$iomsb, $iolsb },\n\t";
+
+			my $a = hex($addr);
+			if ($a > $max_ioaddr) {
+				$max_ioaddr = $a;
+			}
+			$regmap_index++;
+		}
+	}
+	$regmap_struct = $regmap_struct . "{ -1, 0, 0, 0, 0 }";
+
+	# Build register map index
+
+	my $index_array = $self->print_array_c("\t", 60, @regmap_indices);
+
+	# Print source code
+
+	printf <<END_OF_TEXT
+/* $DEVNAME register definitions and hardware map.
+ * This file is auto generated.
+ */
+#ifndef _$DEVNAME\_REGS_H_
+#define _$DEVNAME\_REGS_H_
+
+/* Some definitions
+ *
+ * Device register:
+ *
+ * A named register with a single function in the scanner.
+ * It can occupy one or many IO registers.
+ * Example: SCANLEN , which is a 12-bit register in IO registers 0x95 and 0x96
+ *
+ * IO register:
+ *
+ * A register identified by its address in the hardware IO space.
+ * It can contain one or several device registers.
+ * Example: 0x5a, holds the device registers ADCLKINV, RLCSEL,
+ * CDSREF[1:0] and RLC[3:0].
+ *
+ * Register map:
+ *
+ * A device register to IO register mapping (and possibly vice versa).
+ */
+
+struct regset_ent
+{
+	int reg;		/* Device register - enum $devname\_devreg */
+	unsigned int val;
+};
+
+/* Device register to IO register mapping */
+struct regmap_ent
+{
+    int devreg;			/* Device register - enum $devname\_devreg */
+    char msb;			/* devreg MSB of this mapping. It is not the
+				 * MSB of the whole devreg, only the part
+				 * defined in the io register below. */
+    int ioreg;			/* IO register address */
+    char iomsb, iolsb;		/* ioreg MSB and LSB */
+};
+
+/* IO register */
+struct ioregister
+{
+	int ioreg;	/* IO register address */
+	int inuse;	/* Defined/declared bits bitmask */
+	int dirty;	/* Dirty bits bitmask */
+	int val;	/* Current value in the I/O register */
+};
+
+/* Enumeration of $DEVNAME device registers. */
+
+enum $devname\_devreg
+{
+	$enum_array
+
+	$DEVNAME\_DEVREG_MAX /* not a register */
+};
+
+#ifdef $DEVNAME\_PRIVATE /* For private use in $devname\_low.c */
+
+/* $DEVNAME device register name strings. */
+const char *$devname\_devreg_names[] = {
+	$names_array
+};
+
+/* $DEVNAME device register --> IO register map. */
+const struct regmap_ent $devname\_regmap[] = {
+	$regmap_struct
+};
+
+/* Start locations in $devname\_regmap[] of the $devname\_devreg enumerations. */
+const int $devname\_regmap_index[] = {
+	$index_array
+};
+
+/* Max $DEVNAME IO register address */
+#define $DEVNAME\_MAX_IOREG 175
+
+#endif /* $DEVNAME\_PRIVATE */
+
+#endif /* _$DEVNAME\_REGS_H_ */
+END_OF_TEXT
+;
+}
+
 sub Regmapper::set_ioreg_val
 {
 	my ($self, $addr, $val) = @_;
@@ -279,5 +446,5 @@ sub Regmapper::get_devreg_val
 	return $val;
 }
 
-#my $x = new Regmapper("gl841_regmap.txt");
-#print $x->dump_devregs();
+#my $x = new Regmapper("gl843_regmap.txt");
+#$x->dump_devregs_c("gl843");
