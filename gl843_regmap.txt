@@ -40,7 +40,7 @@
 25        -                -            -            -               LINCNT[19:16]
 26        LINCNT[15:8]
 27        LINCNT[7:0]
-28        “GMMWRDATA”[7:0]
+28        _GMMWRDATA_[7:0]
 29        -                -            -            RAMADDR[20:16]
 2A        RAMADDR[15:8]
 2B        RAMADDR[7:0]
@@ -60,16 +60,16 @@
 39        LPERIOD[7:0]
 3A        -                -            -            -               -              -          -            FEWRDATA[8]
 3B        FEWRDATA[7:0]
-3C        “RAMWRDATA”[7:0]
+3C        _RAMWRDATA_[7:0]
 3D        -                -            -            -               FEEDL[19:16]
 3E        FEEDL[15:8]
 3F        FEEDL[7:0]
 40        DOCSNR           ADFSNR       COVERSNR     CHKVER          DOCJAM         HISPDFLG   MOTMFLG      DATAENB
-41        PWRBIT           BUFEMPTY     FEEDFSH      SCANFSH         HOMESNR        LAMPSTS    FEBUSY       MOTORENB
+41        PWRBIT_RD        BUFEMPTY     FEEDFSH      SCANFSH         HOMESNR        LAMPSTS    FEBUSY       MOTORENB
 42        VALIDWORD[24:17]
 43        VALIDWORD[16:9]
 44        VALIDWORD[8:1]
-45        “RAMRDDATA”[7:0]
+45        _RAMRDDATA_[7:0]
 46        -                -            -            -               -              -          -            FERDDATA[8]
 47        FERDDATA[7:0]    -
 48        -                -            -            -               FEDCNT[19:16]
@@ -78,7 +78,7 @@
 4B        -                -            -            -               SCANCNT[19:16]
 4C        SCANCNT[15:8]
 4D        SCANCNT[7:0]
-4E        “GMMRDDATA”[7:0]
+4E        _GMMRDDATA_[7:0]
 4F        -                -            DOGON        ROMBSY          LCMBSY         TX232BSY   RX232BSY     RXREADY
 50        -                -            FERDA[5:0]
 51        -                -            FEWRA[5:0]
@@ -107,7 +107,7 @@
 68        FSTPSEL[1:0]                  FASTPWM[5:0]
 69        FSHDEC[7:0]
 6A        FMOVNO[7:0]
-6B        MULTFILM         GPOM13       GPOM12       GPOM11          GPOCK4         GOPCP      GPOLEDB      GPOADF
+6B        MULTFILM         GPOM13       GPOM12       GPOM11          GPOCK4         GPOCP      GPOLEDB      GPOADF
 6C        GPIO16           GPIO15       GPIO14       GPIO13          GPIO12         GPIO11     GPIO10       GPIO9
 6D        GPIO8            GPIO7        GPOI6        GPIO5           GPIO4          GPIO3      GPIO2        GPIO1
 6E        GPOE16           GPOE15       GPOE14       GPOE13          GPOE12         GPOE11     GPOE10       GPOE9
@@ -169,7 +169,7 @@ A7        GPOE24           GPOE23       GPOE22       GPOE21          GPOE20     
 A8        -                -            GPOE27       GPOE26          GPOE25         GPO27      GPO26        GPO25
 A9        -                -            GPO33        GPO32           GPO31          GPO30      GPO29        GPO28
 AB        GPOM9            MULSTOP[2:0]                              NODECEL        TB3TB1     TB5TB2       FIX16CLK
-AC        VRHOME3          VRHOME2      VRMOME3      VRMOME2         VRBACK3        VRBACK2    VRSCAN3      VRSCAN2
+AC        VRHOME[3:2]                   VRMOVE[3:2]                  VRBACK[3:2]               VRSCAN[3:2]
 AD        -                -            ADFTYP[1:0]                  CCDTYP[3:0]
 AE        -                -            MOTSET[2:0]                                 PROCESS[2:0]
 AF        SCANTYP[2:0]                               FEDTYP[1:0]                    ADFMOVE[2:0]
