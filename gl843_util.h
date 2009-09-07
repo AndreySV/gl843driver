@@ -16,7 +16,7 @@
 #ifndef _GL843_UTIL_H_
 #define _GL843_UTIL_H_
 
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0])
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 #define DBG_error0      0	/* unfilterable messages */
 #define DBG_error       1	/* fatal errors */
@@ -30,6 +30,9 @@
 
 #define DBG(level, msg, ...)	\
 	vprintf_dbg(level, __func__, 0, msg, __VA_ARGS__)
+
+#define DBG2(level, msg)	\
+	vprintf_dbg(level, __func__, 0, msg)
 
 #define DBG_LN(level, msg, ...)	\
 	vprintf_dbg(level, __func__, __LINE__, msg, __VA_ARGS__)
