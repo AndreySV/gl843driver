@@ -16,6 +16,7 @@
 #ifndef _GL843_LOW_H_
 #define _GL843_LOW_H_
 
+#include <libusb-1.0/libusb.h>
 #include "gl843_regs.h"
 
 struct gl843_device
@@ -51,9 +52,8 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size,
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val);
 void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len);
 unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg);
-int write_dirty_regs(struct gl843_device *dev);
-#if 0
+int flush_regs(struct gl843_device *dev);
 int read_regs(struct gl843_device *dev, ...);
-#endif
+int write_afe(struct gl843_device *dev, int reg, int val);
 
 #endif /* _GL843_LOW_H_ */

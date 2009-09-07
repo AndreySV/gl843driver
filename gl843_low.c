@@ -13,6 +13,7 @@
  * Lesser General Public License for more details.
  */
 
+#include <string.h>
 #include <stdarg.h>
 #include <libusb-1.0/libusb.h>
 
@@ -43,6 +44,8 @@ int chk_ioreg(int addr, const char *func, int line)
 /* Constructor */
 void create_device(struct gl843_device *dev)
 {
+	int i;
+
 	dev->ioregs = gl843_ioregs;
 	dev->regmap = gl843_regmap;
 	dev->devreg_names = gl843_devreg_names;
@@ -52,6 +55,11 @@ void create_device(struct gl843_device *dev)
 	dev->max_devreg = GL843_MAX_DEVREG - 1;
 	dev->max_dirty = -1;
 	dev->min_dirty = dev->max_ioreg;
+
+	for (i = 0; i < GL843_MAX_IOREG; i++) {
+		memset(&dev->ioregs[i], 0, sizeof(dev->ioregs[0]));
+		dev->ioregs[i].ioreg = i;
+	}
 }
 
 /*** USB functions. TODO: Use SANE's USB API. ***/
@@ -83,10 +91,10 @@ int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
 	return 0;
 
 bad_regnum:
-	DBG(DBG_io2, "bad IO register 0x%02x\n", ioreg);
+	DBG(DBG_error, "bad IO register 0x%02x\n", ioreg);
 	return -1;
 usb_error:
-	DBG(DBG_io2, "libusb error: %s\n", sanei_libusb_strerror(ret));
+	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
 	return -1;
 }
 
@@ -124,10 +132,10 @@ int read_ioreg(struct gl843_device *dev, uint8_t ioreg)
 	return buf[0];
 
 bad_regnum:
-	DBG(DBG_io2, "bad IO register 0x%02x\n", ioreg);
+	DBG(DBG_error, "bad IO register 0x%02x\n", ioreg);
 	return -1;
 usb_error:
-	DBG(DBG_io2, "libusb error: %s\n", sanei_libusb_strerror(ret));
+	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
 	return -1;
 }
 
@@ -172,7 +180,7 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 		DBG(DBG_io, "invalid flags = %d\n", flags);
 		return -1;
 	}
-	if (write_dirty_regs(dev) < 0)
+	if (flush_regs(dev) < 0)
 		return -1;
 
 	DBG(DBG_io, "%s addr = 0x%x, size = %zu, flags = %d\n",
@@ -221,7 +229,7 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 	}
 	return 0;
 usb_error:
-	DBG(DBG_io2, "libusb error: %s\n", sanei_libusb_strerror(ret));
+	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
 	return -1;
 }
 
@@ -242,7 +250,7 @@ static void mark_ioreg_dirty(struct gl843_device *dev, int ioreg, int mask)
  * reg: register name (enum gl843_devreg) or address (IOREG(address))
  * val: register value
  *
- * Call write_dirty_regs() to actually update the register in the scanner.
+ * Call flush_regs() to actually update the register in the scanner.
  */
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val)
 {
@@ -308,7 +316,7 @@ unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg)
 }
 
 /* Write dirty registers to the scanner */
-int write_dirty_regs(struct gl843_device *dev)
+int flush_regs(struct gl843_device *dev)
 {
 	int i;
 	int ret;
@@ -346,9 +354,9 @@ int read_regs(struct gl843_device *dev, ...)
 	va_start(ap, dev);
 
 	/* Find the IO registers we need to read, and mark them as dirty. */
-	while ((reg = va_arg(ap, int)) != -1) {
+	while ((reg = va_arg(ap, int)) >= 0) {
 		const struct regmap_ent *rmap;
-		if (reg < 0 || reg > dev->max_devreg)
+		if (reg > dev->max_devreg)
 			continue;
 		rmap = dev->regmap + dev->regmap_index[reg];
 		for (; rmap->devreg == reg; ++rmap) {
@@ -369,4 +377,29 @@ int read_regs(struct gl843_device *dev, ...)
 usb_error:
 	/* Don't print an error message. read_ioreg() already did. */
 	return ret;
+}
+
+/* Write a configuration register in the analog front end (the A/D-converter) */
+int write_afe(struct gl843_device *dev, int reg, int val)
+{
+	int fe_busy = 1;
+	int timeout = 10;	/* 10 <==> 40 ms as one register read uses
+				 * 2 USB requests to and 2 responses, 1 ms each */
+	while (fe_busy && timeout) {
+		if (read_regs(dev, GL843_FEBUSY, -1) < 0);
+			return -1; /* USB error. */
+		fe_busy = get_reg(dev, GL843_FEBUSY);
+		timeout--;
+	}
+	if (timeout == 0) {
+		DBG(DBG_error, "Cannot write config register %d in the "
+			"analog frontend (AFE): The AFE is busy.\n", reg);
+		return -1;
+	}
+
+	set_reg(dev, GL843_FEWRA, reg);
+	set_reg(dev, GL843_FEWRDATA, val);
+	if (flush_regs(dev) < 0)
+		return -1; /* USB error. */
+	return 0;
 }
