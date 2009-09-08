@@ -6,20 +6,20 @@
 #include "gl843_motor.h"
 
 /* m:		Empty table to fill with data
+ * step:	motor step size
  * min_speed:   timer count for first motor step. That is, start speed AND
  *              start acceleration, since we're always starting from standstill.
  * max_speed:   target timer count (i.e target speed).
+ * vref:        voltage reference (current limit)
  *
- * Returns:     steps_max value of struct.
- *
- * Note:        Set min_speed >= max_speed. These perameters
- *              express speed as motor clock ticks per step, not velocity.
+ * Note:        Set min_speed >= max_speed. These perameters express speed as
+ *              motor clock ticks per step, not velocity.
  */
-size_t build_motor_table(struct gl843_motor_accel *m,
-			 enum motor_step step,
-			 uint16_t min_speed,
-			 uint16_t max_speed,
-			 uint8_t vref)
+void build_motor_table(struct gl843_motor_setting *m,
+			enum motor_step step,
+			uint16_t min_speed,
+			uint16_t max_speed,
+			uint8_t vref)
 {
 	/* Linear acceleration of a stepping motor
 	 * TODO: with smooth transition from acceleration to constant speed.
@@ -29,7 +29,7 @@ size_t build_motor_table(struct gl843_motor_accel *m,
 	 */
 
 	double c, c_min;
-	unsigned int i, t;
+	unsigned int i, n, k;
 	uint16_t *tbl;
 
 	c = min_speed; /* min_speed is named c0 in the article */
@@ -39,42 +39,49 @@ size_t build_motor_table(struct gl843_motor_accel *m,
 	m->vref = vref;
 	m->min_speed = min_speed;
 	m->max_speed = max_speed;
-	m->len = MTRTBL_SIZE;
-	m->steps_max = 0;
-	m->t_max = 0;
-	t = 0;
+
 	tbl = m->tbl;
 
 	/* Do two steps at lowest speed to
 	 * get the motor running stably */
 
-	*tbl = (int) (c + 0.5);
-	t += *tbl++;
-	*tbl = (int) (c + 0.5);
-	t += *tbl++;
+	tbl[0] = (int) (c + 0.5);
+	tbl[1] = tbl[0];
 
 	/* Build table */
 
-	for (i = 2; i < m->len; i++) {
+	for (n = 0, i = 2; i < MTRTBL_SIZE; i++) {
 		c -= 2*c / (4*i + 1.0);
 		if (c <= c_min) {
 			c = c_min;
-			if (m->steps_max == 0) {
-				m->steps_max = i;
-				m->t_max = t + c;
-			}
+			if (n == 0)
+				n = i+1;
 		}
-		*tbl = (int) (c + 0.5);
-		t += *tbl++;
+		tbl[i] = (int) (c + 0.5);
 	}
-	if (m->steps_max == 0) {
-		DBG(DBG_warn, "Warning: cannot reach target speed %d, "
-			"when starting from %d [ticks per step]",
-			max_speed, min_speed);
-		m->t_max = t;
+	if (n == 0) {
+		DBG(DBG_warn, "Can't reach %d ticks/step\n"
+			"    when starting from %d ticks/step.\n"
+			"    Actual speed = %d\n", max_speed, min_speed,
+			(int) (c + 0.5));
+		n = MTRTBL_SIZE;
 	}
 
-	return m->steps_max;
+	/* Adjust table size for hardware */
+
+	/* The GL843 multiplies stepcnt by 2^steptim
+	 * If stepcnt = 255 & steptim = 2 then
+	 * max table length becomes 255*2^2 = 1020 */
+
+	k = (1 << STEPTIM_VAL) - 1;
+	n = (n + k) & ~k;	/* Make n evenly divisible by 2^steptim */
+	m->stepcnt = n >> STEPTIM_VAL;
+	m->len = n;
+
+	/* Calculate total acceleration time (needed for Z1MOD, Z2MOD) */
+	m->t_max = 0;
+	for (i = 0; i < n; i++)
+		m->t_max += tbl[i];
 }
 
 /* GL843_FEDCNT == step counter. Unit: 1/8th step, i.e 1 step <=> FEDCNT = 8 */
@@ -84,7 +91,6 @@ int send_motor_accel(struct gl843_device *dev,
 {
 	uint16_t buf[len];
 	uint16_t *p;
-	int ret;
 
 	if (table < 1 || table > 5)
 		return -1;
@@ -98,14 +104,99 @@ int send_motor_accel(struct gl843_device *dev,
 	} else {/* if (host_is_little_endian()) */
 		p = a;
 	}
+
+#if 0
+	printf("\nTable %d: %d steps\n\n", table, len);
+	int i;
+	for (i = 0; i < len; i++) {
+		printf("%d ", p[i]);
+	}
+	printf("\n");
+#endif
 	return xfer_bulk(dev, (uint8_t *) p,
 		len * sizeof(uint16_t), (table-1) * 2048, MOTOR_SRAM | BULK_OUT);
+}
+
+extern int usleep();
+
+/* Use this function to explore the motor settings of your scanner. */
+int do_move_test(struct gl843_device *dev)
+{
+	struct gl843_motor_setting m;
+	struct dbg_timer tmr;
+
+	init_timer(&tmr, CLOCK_REALTIME);
+
+/*116000*/
+	//build_motor_table(&m, FULL_STEP, 7000, 370, 0);
+	//build_motor_table(&m, HALF_STEP, 4500, 175, 0);
+	build_motor_table(&m, HALF_STEP, 4000, 175, 0);
+	send_motor_accel(dev, 1, m.len, m.tbl);
+
+	/* Clear FEDCNT */
+
+	set_reg(dev, GL843_CLRMCNT, 1);
+	flush_regs(dev);
+
+	/* Move forward (defined by FEEDL below) */
+
+	set_reg(dev, GL843_STEPNO, m.stepcnt);
+	set_reg(dev, GL843_STEPTIM, STEPTIM_VAL);
+
+	set_reg(dev, GL843_FEEDL, 1000 * (1 << m.step));
+	set_reg(dev, GL843_STEPSEL, m.step);
+	set_reg(dev, GL843_VRMOVE, m.vref);
+
+	set_reg(dev, GL843_MTRREV, 0);
+	set_reg(dev, GL843_MTRPWR, 1);
+	flush_regs(dev);
+
+	set_reg(dev, GL843_MOVE, 0);	/* Start moving */
+	flush_regs(dev);
+
+	int moving = 1;
+	while (moving) {
+		read_regs(dev, GL843_MOTORENB, GL843_FEDCNT, -1);
+		moving = get_reg(dev, GL843_MOTORENB);
+		//printf("fedcnt = %d\n", get_reg(dev, GL843_FEDCNT));
+		//fflush(stdout);
+		usleep(1000);
+	}
+
+	printf("-----------\n");
+
+	/* Back up again */
+
+	set_reg(dev, GL843_MTRREV, 1);
+	set_reg(dev, GL843_MOVE,0);
+	flush_regs(dev);
+
+	moving = 1;
+	while (moving) {
+		read_regs(dev, GL843_MOTORENB, GL843_FEDCNT, -1);
+		moving = get_reg(dev, GL843_MOTORENB);
+		//printf("fedcnt = %d\n", get_reg(dev, GL843_FEDCNT));
+		//fflush(stdout);
+		usleep(1000);
+	}
+	printf("\n");
+
+	set_reg(dev, GL843_MTRPWR, 0);
+	set_reg(dev, GL843_FULLSTP, 1);
+	flush_regs(dev);
+
+	printf("elapsed time: %f [ms]\n", get_timer(&tmr));
+
+	set_reg(dev, GL843_SCANRESET, 0);
+	flush_regs(dev);
+
+	return 0;
 }
 
 void write_safe_accel_tables(struct gl843_device *dev)
 {
 	int i;
-	struct gl843_motor_accel m;
+	struct gl843_motor_setting m;
 
 	//build_motor_table(&m, 3700, 175);
 	build_motor_table(&m, FULL_STEP, 8800, 400, 1);
