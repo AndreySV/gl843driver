@@ -67,6 +67,27 @@ void init_debug(const char *backend, int level)
 	DBG (0, "setting debug level of %s to %d.\n", backend, g_level);
 }
 
+/*
+* Get CPU endianness. 0 = unknown, 1 = little, 2 = big
+*/
+int __attribute__ ((pure)) native_endianness()
+{
+	/* Encoding the endianness enums in a string and then reading that
+	 * string as a 32-bit int, returns the correct endianness automagically.
+	 */
+	return (char) *((uint32_t*)("\1\0\0\2"));
+}
+
+int __attribute__ ((pure)) host_is_big_endian()
+{
+	return native_endianness() == 2;
+}
+
+int __attribute__ ((pure)) host_is_little_endian()
+{
+	return native_endianness() == 1;
+}
+
 const char *sanei_libusb_strerror(int errcode)
 {
 	switch (errcode) {
@@ -100,5 +121,37 @@ const char *sanei_libusb_strerror(int errcode)
 		return "Other error";
 	default:
 		return "Unknown libusb-1.0 error code";
+	}
+}
+
+const char *sanei_strerror(int errcode)
+{
+	switch (errcode) {
+	case SANE_STATUS_GOOD:
+		return "everything A-OK";
+	case SANE_STATUS_UNSUPPORTED:
+		return "operation is not supported";
+	case SANE_STATUS_CANCELLED:
+		return "operation was cancelled";
+	case SANE_STATUS_DEVICE_BUSY:
+		return "device is busy; try again later";
+	case SANE_STATUS_INVAL:
+		return "data is invalid (includes no dev at open)";
+	case SANE_STATUS_EOF:
+		return "no more data available (end-of-file)";
+	case SANE_STATUS_JAMMED:
+		return "document feeder jammed";
+	case SANE_STATUS_NO_DOCS:
+		return "document feeder out of documents";
+	case SANE_STATUS_COVER_OPEN:
+		return "scanner cover is open";
+	case SANE_STATUS_IO_ERROR:
+		return "error during device I/O";
+	case SANE_STATUS_NO_MEM:
+		return "out of memory";
+	case SANE_STATUS_ACCESS_DENIED:
+		return "access to resource has been denied";
+	default:
+		return "undefined SANE error";
 	}
 }

@@ -40,7 +40,29 @@
 
 void vprintf_dbg(int level, const char *func, int line, const char *msg, ...)
 	__attribute__ ((format (printf, 4, 5)));
-const char *sanei_libusb_strerror(int errcode);
 void init_debug(const char *backend, int level);
+
+int native_endianness(void);
+int __attribute__ ((pure)) host_is_big_endian(void);
+int __attribute__ ((pure)) host_is_little_endian(void);
+
+const char *sanei_libusb_strerror(int errcode);
+
+typedef enum
+  {
+    SANE_STATUS_GOOD = 0,	/* everything A-OK */
+    SANE_STATUS_UNSUPPORTED,	/* operation is not supported */
+    SANE_STATUS_CANCELLED,	/* operation was cancelled */
+    SANE_STATUS_DEVICE_BUSY,	/* device is busy; try again later */
+    SANE_STATUS_INVAL,		/* data is invalid (includes no dev at open) */
+    SANE_STATUS_EOF,		/* no more data available (end-of-file) */
+    SANE_STATUS_JAMMED,		/* document feeder jammed */
+    SANE_STATUS_NO_DOCS,	/* document feeder out of documents */
+    SANE_STATUS_COVER_OPEN,	/* scanner cover is open */
+    SANE_STATUS_IO_ERROR,	/* error during device I/O */
+    SANE_STATUS_NO_MEM,		/* out of memory */
+    SANE_STATUS_ACCESS_DENIED	/* access to resource has been denied */
+  }
+SANE_Status;
 
 #endif /* _GL843_UTIL_H_ */
