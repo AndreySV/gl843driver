@@ -57,15 +57,51 @@ void init_debug(const char *backend, int level)
 			buf[i] = toupper(buf[i]);
 		s = getenv(buf);
 		free(buf);
-		if (!s)
-			return;
-		g_level = atoi(s);
+		if (s)
+			g_level = atoi(s);
 	} else {
 		g_level = level;
 	}
 
 	DBG (0, "setting debug level of %s to %d.\n", backend, g_level);
 }
+
+void init_timer(struct dbg_timer *timer, clockid_t clk_id)
+{
+	timer->clk_id = clk_id;
+	clock_getres(clk_id, &timer->res);
+	clock_gettime(clk_id, &timer->ts);
+}
+
+void reset_timer(struct dbg_timer *timer)
+{
+	clock_gettime(timer->clk_id, &timer->ts);
+}
+
+double get_timer(struct dbg_timer *timer)
+{
+	double diff;
+	struct timespec ts2;
+
+	clock_gettime(timer->clk_id, &ts2);
+
+	/* Calculate elapsed time */
+
+	ts2.tv_nsec -= timer->ts.tv_nsec;
+	if (ts2.tv_nsec < 0) {
+		ts2.tv_sec--;
+		ts2.tv_nsec += 1000000000;
+	}
+	ts2.tv_sec -= timer->ts.tv_sec;
+
+	/* Convert nanoseconds to milliseconds */
+
+	diff = ts2.tv_sec * 1000;
+	diff += ts2.tv_nsec / 1E6;
+
+	return diff;
+}
+
 
 /*
 * Get CPU endianness. 0 = unknown, 1 = little, 2 = big

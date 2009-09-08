@@ -16,6 +16,8 @@
 #ifndef _GL843_UTIL_H_
 #define _GL843_UTIL_H_
 
+#include <time.h>
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 #define DBG_error0      0	/* unfilterable messages */
@@ -41,6 +43,18 @@
 void vprintf_dbg(int level, const char *func, int line, const char *msg, ...)
 	__attribute__ ((format (printf, 4, 5)));
 void init_debug(const char *backend, int level);
+
+struct dbg_timer {
+	clockid_t clk_id;
+	struct timespec res;
+	struct timespec ts;
+};
+
+/* Some simple timing functions */
+
+void init_timer(struct dbg_timer *timer, clockid_t clk_id);
+void reset_timer(struct dbg_timer *timer);
+double get_timer(struct dbg_timer *timer);
 
 int native_endianness(void);
 int __attribute__ ((pure)) host_is_big_endian(void);
