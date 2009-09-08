@@ -160,6 +160,7 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 	uint8_t setup[8];
 	libusb_device_handle *h = dev->libusb_handle;
 	const int to = 10000;	/* USB timeout [ms] */
+	int reset_addr = 0;
 
 	switch (flags & (GAMMA_SRAM | MOTOR_SRAM | IMG_DRAM)) {
 	case IMG_DRAM:
@@ -170,11 +171,13 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 		port = (dir == BULK_IN) ? GL843__GMMRDDATA_ : GL843__GMMWRDATA_;
 		set_reg(dev, GL843_MTRTBL, 0);
 		set_reg(dev, GL843_GMMADDR, addr);
+		reset_addr = 1;
 		break;
 	case MOTOR_SRAM:
 		port = (dir == BULK_IN) ? GL843__GMMRDDATA_ : GL843__GMMWRDATA_;
 		set_reg(dev, GL843_MTRTBL, 1);
 		set_reg(dev, GL843_GMMADDR, addr);
+		reset_addr = 1;
 		break;
 	default:
 		DBG(DBG_io, "invalid flags = %d\n", flags);
@@ -226,6 +229,13 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 			goto usb_error;
 		size -= len;
 		buf += len;
+	}
+
+	/* Do this or else the motor/gamma doesn't get written */
+	if (reset_addr) {
+		set_reg(dev, GL843_MTRTBL, 0);
+		set_reg(dev, GL843_GMMADDR, 0);
+		flush_regs(dev);
 	}
 	return 0;
 usb_error:
