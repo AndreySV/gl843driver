@@ -367,6 +367,8 @@ int read_regs(struct gl843_device *dev, ...)
 
 	/* Read dirty IO registers, and mark them as clean. */
 	for (reg = dev->min_dirty; reg <= dev->max_dirty; reg++) {
+		if (dev->ioregs[reg].dirty == 0)
+			continue;
 		ret = read_ioreg(dev, reg);
 		if (ret < 0)
 			goto usb_error;
