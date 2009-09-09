@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "gl843_low.h"
 #include "gl843_util.h"
+#include "gl843_motor.h"
 #include "gl843_cs4400f.h"
 
 /* Device-specific settings and functions for Canon Canoscan 4400F */
@@ -75,8 +76,6 @@ void set_motor(struct gl843_device *dev)
 		{ GL843_DECSEL, decsel },	/* 0x5E: 0 or 1 */
 		{ GL843_MULSTOP, 0 },		/* 0xAB: STOPTIM * 2^MULSTOP */
 
-		{ GL843_MCNTSET, 0 },		/* 0x09: 0 = Motor table counts
-						 * pixel clk */
 		{ GL843_STEPNO, stepno },	/* 0x21: Motor table 1 size */
 		{ GL843_FASTNO, fastno },	/* 0x24: Motor table 2 size */
 		{ GL843_FSHDEC, fshdec },	/* 0x69: Motor table 3 size */
@@ -86,10 +85,7 @@ void set_motor(struct gl843_device *dev)
 
 		{ GL843_Z1MOD, z1mod },		/* 0x60,0x61,0x62 */
 		{ GL843_Z2MOD, z2mod },		/* 0x63,0x64,0x65 */
-		/* 0xAB */
-		{ GL843_NODECEL, 0 },
-		{ GL843_TB3TB1, 0 },
-		{ GL843_TB5TB2, 0 },
+
 
 		/* Stepping motor */
 
@@ -265,10 +261,6 @@ chk_failed:
 	return -1;
 }
 
-static void setup_gpio(struct gl843_device *dev)
-{
-}
-
 void setup_scanner(struct gl843_device *dev)
 {
 	struct regset_ent gpio1[] = {
@@ -416,6 +408,8 @@ void setup_scanner(struct gl843_device *dev)
 
 		/* Motor */
 
+		/* 0x09 */
+		{ GL843_MCNTSET, 0 },	/* 0 = Motor table counts pixel clk */
 		/* 0x66 */
 		{ GL843_PHFREQ, 0 },	/* unused */
 		/* 0x67 */
@@ -425,6 +419,10 @@ void setup_scanner(struct gl843_device *dev)
 		/* 0x87 */
 		{ GL843_YENB, 0 },	/* unused */
 		{ GL843_YBIT, 0 },	/* unused */
+		/* 0xAB */
+		{ GL843_NODECEL, 0 },
+		{ GL843_TB3TB1, 0 },
+		{ GL843_TB5TB2, 0 },
 
 		/* Unused functions */
 
@@ -471,8 +469,183 @@ void setup_scanner(struct gl843_device *dev)
 
 	set_reg(dev, GL843_PWRBIT, 1);	/* 0x06 */
 	flush_regs(dev);
+}
 
+/* m:		Empty table to fill with data
+ * step:	motor step size
+ * min_speed:   timer count for first motor step. That is, start speed AND
+ *              start acceleration, since we're always starting from standstill.
+ * max_speed:   target timer count (i.e target speed).
+ * vref:        voltage reference (current limit)
+ *
+ * Note:        Set min_speed >= max_speed. These perameters express speed as
+ *              motor clock ticks per step, not velocity.
+ */
+void build_motor_table(struct gl843_motor_setting *m,
+			enum motor_step step,
+			uint16_t min_speed,
+			uint16_t max_speed,
+			uint8_t vref)
+{
+	/* Linear acceleration of a stepping motor
+	 * TODO: with smooth transition from acceleration to constant speed.
+	 *
+	 * Reference: David Austin, Generate stepper-motor speed profiles
+	 * in real time, Embedded Systems Programming, January 2005
+	 */
 
+	double c, c_min;
+	unsigned int i, n, k;
+	uint16_t *tbl;
+
+	c = min_speed; /* min_speed is named c0 in the article */
+	c_min = max_speed;
+
+	m->step = step;
+	m->vref = vref;
+	m->min_speed = min_speed;
+	m->max_speed = max_speed;
+
+	tbl = m->tbl;
+
+	/* Do two steps at lowest speed to
+	 * get the motor running stably */
+
+	tbl[0] = (int) (c + 0.5);
+	tbl[1] = tbl[0];
+
+	/* Build table */
+
+	for (n = 0, i = 2; i < MTRTBL_SIZE; i++) {
+		c -= 2*c / (4*i + 1.0);
+		if (c <= c_min) {
+			c = c_min;
+			if (n == 0)
+				n = i+1;
+		}
+		tbl[i] = (int) (c + 0.5);
+	}
+	if (n == 0) {
+		DBG(DBG_warn, "Can't reach %d ticks/step\n"
+			"    when starting from %d ticks/step.\n"
+			"    Actual speed = %d\n", max_speed, min_speed,
+			(int) (c + 0.5));
+		n = MTRTBL_SIZE;
+	}
+
+	/* Adjust table size for hardware */
+
+	/* The GL843 multiplies stepcnt by 2^steptim
+	 * If stepcnt = 255 & steptim = 2 then
+	 * max table length is 255*2^2 = 1020 */
+
+	k = (1 << STEPTIM_VAL) - 1;
+	n = (n + k) & ~k;	/* Make n evenly divisible by 2^steptim */
+	m->stepcnt = n >> STEPTIM_VAL;
+	m->len = n;
+
+	/* Calculate total acceleration time (needed for Z1MOD, Z2MOD) */
+	m->t_max = 0;
+	for (i = 0; i < n; i++)
+		m->t_max += tbl[i];
+}
+
+void cs4400f_build_motor_table(struct gl843_motor_setting *m,
+			       unsigned int speed,
+			       enum motor_step step)
+{
+	switch (step) {
+	case FULL_STEP:
+		DBG2(DBG_warn, "Full steps do not work well with CS4400F. "
+			" Will set fastest half step mode instead.\n");
+		build_motor_table(m, HALF_STEP, 4500, 175, 0);
+		break;
+
+	case HALF_STEP:
+		if (speed < 175) {
+			DBG(DBG_warn, "Cannot run motor at %d ticks/half "
+				"step. Reducing speed to 175.\n", speed);
+			speed = 175; /* This is the scanner's highest speed */
+		}
+		if (speed > 13000) {
+			DBG(DBG_warn, "Cannot run motor (well) at %d ticks/half "
+				"step. Increasing speed to 13000.\n", speed);
+			speed = 13000;
+		}
+
+		if (speed <= 700)
+			build_motor_table(m, step, 4500, speed, 0);
+		else if (speed <= 1000)
+			build_motor_table(m, step, 8000, speed, 0);
+		else if (speed <= 3500)
+			build_motor_table(m, step, 15000, speed, 0);
+		else if (speed <= 10000)
+			build_motor_table(m, step, 33000, speed, 0);
+		else
+			build_motor_table(m, step, 65535, speed, 0);
+		break;
+
+	case QUARTER_STEP:
+		if (speed < 90) {
+			DBG(DBG_warn, "Cannot run motor at %d ticks/quarter "
+				"step. Reducing speed to 90.\n", speed);
+			speed = 90;
+		}
+		if (speed > 13000) {
+			DBG(DBG_warn, "Cannot run motor (well) at %d ticks/quarter "
+				"step. Increasing speed to 13000.\n", speed);
+			speed = 13000;
+		}
+
+		if (speed < 500)
+			build_motor_table(m, step, 2000, speed, 0);
+		else if (speed <= 1000)
+			build_motor_table(m, step, 3000, speed, 0);
+		else if (speed <= 4500)
+			build_motor_table(m, step, 10000, speed, 0);
+		else if (speed <= 8000)
+			build_motor_table(m, step, 33000, speed, 0);
+		else if (speed <= 13000)
+			build_motor_table(m, step, 44000, speed, 0);
+		else
+			build_motor_table(m, step, 65535, speed, 0);
+
+		break;
+
+	case EIGHTH_STEP:
+		if (speed < 50) {
+			DBG(DBG_warn, "Cannot run motor at %d ticks/quarter "
+				"step. Reducing speed to 50.\n", speed);
+			speed = 50;
+		}
+
+		if (speed < 100)
+			build_motor_table(m, step, 1200, speed, 0);
+		else if (speed < 200)
+			build_motor_table(m, step, 1500, speed, 0);
+		else if (speed <= 500)
+			build_motor_table(m, step, 2000, speed, 0);
+		else if (speed <= 1000)
+			build_motor_table(m, step, 5500, speed, 0);
+		else if (speed <= 2000)
+			build_motor_table(m, step, 11000, speed, 0);
+		else if (speed <= 3000)
+			build_motor_table(m, step, 22000, speed, 0);
+		else if (speed <= 4500)
+			build_motor_table(m, step, 27500, speed, 0);
+		else if (speed <= 7000)
+			build_motor_table(m, step, 33000, speed, 0);
+		else if (speed <= 10000)
+			build_motor_table(m, step, 44000, speed, 0);
+		else if (speed <= 15000)
+			build_motor_table(m, step, 65000, speed, 0);
+		else {
+			/* The motor will stall on roughly 0.5% of
+			 * the steps at these speeds. */
+			build_motor_table(m, step, 65535, speed, 0);
+		}
+		break;
+	}
 }
 
 #if 0

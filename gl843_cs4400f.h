@@ -1,6 +1,8 @@
 #ifndef _GL843_CS4400F_H_
 #define _GL843_CS4400F_H_
 
+#include "gl843_motor.h"
+
 enum gl843_lamp
 {
 	LAMP_OFF,
@@ -25,6 +27,10 @@ void set_frontend(struct gl843_device *dev,
 		  int expr, int expg, int expb);
 void set_motor(struct gl843_device *dev);
 void setup_scanner(struct gl843_device *dev);
+
+void cs4400f_build_motor_table(struct gl843_motor_setting *m,
+	unsigned int speed, enum motor_step step);
+
 
 
 
