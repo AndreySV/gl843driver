@@ -15,6 +15,7 @@
 
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <libusb-1.0/libusb.h>
 
 #define GL843_PRIVATE
@@ -60,6 +61,8 @@ void create_device(struct gl843_device *dev)
 		memset(&dev->ioregs[i], 0, sizeof(dev->ioregs[0]));
 		dev->ioregs[i].ioreg = i;
 	}
+	// CS4400F specific
+	dev->base_ydpi = 1200;
 }
 
 /*** USB functions. TODO: Use SANE's USB API. ***/
@@ -92,10 +95,10 @@ int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
 
 bad_regnum:
 	DBG(DBG_error, "bad IO register 0x%02x\n", ioreg);
-	return -1;
+	return -EINVAL;
 usb_error:
 	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
-	return -1;
+	return -EIO;
 }
 
 /* Read an I/O register from the scanner.
@@ -133,10 +136,10 @@ int read_ioreg(struct gl843_device *dev, uint8_t ioreg)
 
 bad_regnum:
 	DBG(DBG_error, "bad IO register 0x%02x\n", ioreg);
-	return -1;
+	return -EINVAL;
 usb_error:
 	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
-	return -1;
+	return -EIO;
 }
 
 /* Perform a USB bulk transfer to/from the scanner.
@@ -181,10 +184,10 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 		break;
 	default:
 		DBG(DBG_io, "invalid flags = %d\n", flags);
-		return -1;
+		return -EINVAL;
 	}
 	if (flush_regs(dev) < 0)
-		return -1;
+		return -EIO;
 
 	DBG(DBG_io, "%s addr = 0x%x, size = %zu, flags = %d\n",
 		(dir == BULK_IN) ? "IN" : "OUT", addr, size, flags);
@@ -235,13 +238,41 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 	if (reset_addr) {
 		set_reg(dev, GL843_MTRTBL, 0);
 		set_reg(dev, GL843_GMMADDR, 0);
-		flush_regs(dev);
+		if (flush_regs(dev) < 0)
+			return -EIO;
 	}
 	return 0;
 usb_error:
 	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
-	return -1;
+	return -EIO;
 }
+
+/* Transfer a motor acceleration table to the scanner. */
+int send_motor_table(struct gl843_device *dev,
+		     int table, size_t len, uint16_t *a)
+{
+	uint16_t buf[len];
+	uint16_t *p;
+
+	if (table < 1 || table > 5)
+		return -EINVAL;
+
+	if (host_is_big_endian()) {
+		int i;
+		for (i = 0; i < len; i++) {
+			buf[i] = ((a[i] >> 8) & 0xff) | ((a[i] & 0xff) << 8);
+		}
+		p = buf;
+	} else {/* if (host_is_little_endian()) */
+		p = a;
+	}
+
+	DBG(DBG_io, "table = %d\n", table);
+
+	return xfer_bulk(dev, (uint8_t *) p,
+		len * sizeof(uint16_t), (table-1) * 2048, MOTOR_SRAM | BULK_OUT);
+}
+
 
 /*** Device register access functions. ***/
 
@@ -397,8 +428,11 @@ int write_afe(struct gl843_device *dev, int reg, int val)
 	int fe_busy = 1;
 	int timeout = 10;	/* 10 <==> 40 ms as one register read uses
 				 * 2 USB requests to and 2 responses, 1 ms each */
+
+	DBG(DBG_io, "reg = 0x%x, value = 0x%x (%d)\n", reg, val, val);
+
 	while (fe_busy && timeout) {
-		if (read_regs(dev, GL843_FEBUSY, -1) < 0);
+		if (read_regs(dev, GL843_FEBUSY, -1) < 0)
 			return -1; /* USB error. */
 		fe_busy = get_reg(dev, GL843_FEBUSY);
 		timeout--;
@@ -406,12 +440,13 @@ int write_afe(struct gl843_device *dev, int reg, int val)
 	if (timeout == 0) {
 		DBG(DBG_error, "Cannot write config register %d in the "
 			"analog frontend (AFE): The AFE is busy.\n", reg);
-		return -1;
+		return -EBUSY;
 	}
 
 	set_reg(dev, GL843_FEWRA, reg);
 	set_reg(dev, GL843_FEWRDATA, val);
-	if (flush_regs(dev) < 0)
-		return -1; /* USB error. */
+	if (flush_regs(dev) < 0) {
+		return -EIO; /* USB error. */
+	}
 	return 0;
 }

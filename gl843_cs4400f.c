@@ -234,8 +234,12 @@ void set_frontend(struct gl843_device *dev,
 
 
 
-int init_fe(struct gl843_device *dev)
+int init_afe(struct gl843_device *dev)
 {
+	/* Reset AFE */
+
+	CHK(write_afe(dev, 4, 0));
+
 	/* MODE4 = 0
 	 * PGAFS = 2: full scale output (negative),
 	 * MONO = 0: colour mode,
@@ -250,11 +254,24 @@ int init_fe(struct gl843_device *dev)
 	 * MUXOP = 0: 16-bit parallel output
 	 */
 	CHK(write_afe(dev, 2, 0x24));
-	CHK(write_afe(dev, 3, 0x1f)); /* Default. Will change */
+	CHK(write_afe(dev, 3, 0x1f)); /* Default. Can be 0x2f */
 
 	CHK(write_afe(dev, 6, 0));
 	CHK(write_afe(dev, 8, 0));
 	CHK(write_afe(dev, 9, 0));
+
+	/* Default RGB offsets for Canoscan 4400F */
+
+	CHK(write_afe(dev, 32, 96));
+	CHK(write_afe(dev, 33, 96));
+	CHK(write_afe(dev, 34, 96));
+
+	/* Default RGB gains for Canoscan 4400F */
+
+	CHK(write_afe(dev, 40, 75));
+	CHK(write_afe(dev, 41, 75));
+	CHK(write_afe(dev, 42, 75));
+
 	return 0;
 chk_failed:
 	DBG2(DBG_error, "Cannot configure the analog frontend (AFE).\n");
@@ -473,18 +490,18 @@ void setup_scanner(struct gl843_device *dev)
 
 /* m:		Empty table to fill with data
  * step:	motor step size
- * min_speed:   timer count for first motor step. That is, start speed AND
+ * c_max:       timer count for first motor step. That is, start speed AND
  *              start acceleration, since we're always starting from standstill.
- * max_speed:   target timer count (i.e target speed).
+ * c_min:       target timer count (i.e target speed).
  * vref:        voltage reference (current limit)
  *
- * Note:        Set min_speed >= max_speed. These perameters express speed as
+ * Note:        Set c_max >= c_min. These parameters express speed as
  *              motor clock ticks per step, not velocity.
  */
 void build_motor_table(struct gl843_motor_setting *m,
-			enum motor_step step,
-			uint16_t min_speed,
-			uint16_t max_speed,
+			enum motor_step type,
+			uint16_t c_max,
+			uint16_t c_min,
 			uint8_t vref)
 {
 	/* Linear acceleration of a stepping motor
@@ -494,25 +511,23 @@ void build_motor_table(struct gl843_motor_setting *m,
 	 * in real time, Embedded Systems Programming, January 2005
 	 */
 
-	double c, c_min;
-	unsigned int i, n, k;
-	uint16_t *tbl;
+	double c;
+	unsigned int i, n;
+	uint16_t *a;
 
-	c = min_speed; /* min_speed is named c0 in the article */
-	c_min = max_speed;
-
-	m->step = step;
+	m->type = type;
+	m->c_max = c_max;
+	m->c_min = c_min;
 	m->vref = vref;
-	m->min_speed = min_speed;
-	m->max_speed = max_speed;
 
-	tbl = m->tbl;
+	a = m->a;
+	c = m->c_max;	/* c_max is named c0 in the article */
 
 	/* Do two steps at lowest speed to
 	 * get the motor running stably */
 
-	tbl[0] = (int) (c + 0.5);
-	tbl[1] = tbl[0];
+	a[0] = (int) (c + 0.5);
+	a[1] = a[0];
 
 	/* Build table */
 
@@ -523,12 +538,12 @@ void build_motor_table(struct gl843_motor_setting *m,
 			if (n == 0)
 				n = i+1;
 		}
-		tbl[i] = (int) (c + 0.5);
+		a[i] = (int) (c + 0.5);
 	}
 	if (n == 0) {
 		DBG(DBG_warn, "Can't reach %d ticks/step\n"
 			"    when starting from %d ticks/step.\n"
-			"    Actual speed = %d\n", max_speed, min_speed,
+			"    Actual: %d\n ticks/step", c_min, c_max,
 			(int) (c + 0.5));
 		n = MTRTBL_SIZE;
 	}
@@ -539,15 +554,12 @@ void build_motor_table(struct gl843_motor_setting *m,
 	 * If stepcnt = 255 & steptim = 2 then
 	 * max table length is 255*2^2 = 1020 */
 
-	k = (1 << STEPTIM_VAL) - 1;
-	n = (n + k) & ~k;	/* Make n evenly divisible by 2^steptim */
-	m->stepcnt = n >> STEPTIM_VAL;
-	m->len = n;
+	m->alen = STEPTIM_ALIGN_UP(n);
 
 	/* Calculate total acceleration time (needed for Z1MOD, Z2MOD) */
 	m->t_max = 0;
 	for (i = 0; i < n; i++)
-		m->t_max += tbl[i];
+		m->t_max += a[i];
 }
 
 void cs4400f_build_motor_table(struct gl843_motor_setting *m,
@@ -646,6 +658,11 @@ void cs4400f_build_motor_table(struct gl843_motor_setting *m,
 		}
 		break;
 	}
+}
+
+void cs4400f_get_fast_feed_motor_table(struct gl843_motor_setting *m)
+{
+	cs4400f_build_motor_table(m, 175, HALF_STEP);
 }
 
 #if 0

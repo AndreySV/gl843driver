@@ -31,9 +31,11 @@ struct gl843_device
 	int max_devreg;	/* Largest devreg enum, not counting end marker */
 	int min_dirty;	/* First dirty IO register */
 	int max_dirty;	/* Last dirty IO register */
+
+	float base_ydpi;/* Dots per inch at motor full step. */
 };
 
-/* xfer_bulk() flags */
+/* xfer_bulk() and xfer_table() flags */
 #define BULK_IN		0
 #define BULK_OUT	1
 #define IMG_DRAM	0
@@ -49,6 +51,9 @@ int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val);
 int read_ioreg(struct gl843_device *dev, uint8_t ioreg);
 int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size,
 	int addr, int flags);
+int send_motor_table(struct gl843_device *dev, int table, size_t len,
+	uint16_t *a);
+
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val);
 void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len);
 unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg);

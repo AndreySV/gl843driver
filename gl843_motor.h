@@ -9,22 +9,22 @@ enum motor_step
 	EIGHTH_STEP = 3
 };
 
+/* This must be 2. See build_motor_table() */
+#define STEPTIM 2
 /* Must be 1020 (hardware limit). */
 #define MTRTBL_SIZE 1020
-/* This must be 2. See build_motor_table() */
-#define STEPTIM_VAL 2
 
 struct gl843_motor_setting
 {
-	uint8_t vref;		/* Vref (current limiter) setting */
-	enum motor_step step;	/* Step size */
-	uint16_t min_speed;	/* Start speed [counter ticks per step] */
-	uint16_t max_speed;	/* End speed [counter ticks per step] */
-	unsigned int len;	/* Number of steps to reach max_speed */
-	unsigned int stepcnt;	/* Number of steps divided by 2^STEPTIM_VAL */
-	unsigned int t_max;	/* Sum of counter ticks from tbl[0] to
-				 * tbl[stepcnt*(1 << STEPTIM_VAL) - 1] */
-	uint16_t tbl[MTRTBL_SIZE];	/* The acceleration table */
+	enum motor_step type;	/* Step size. */
+	uint16_t c_max;		/* Start speed [counter ticks per step]. */
+	uint16_t c_min;		/* End speed [counter ticks per step]. */
+	unsigned int alen;	/* Number of steps to reach max_speed.
+				 * The constructor must ensure that the
+				 * value is  divisible by 2^STEPTIM. */
+	uint8_t vref;		/* Vref (current limiter) setting. */
+	unsigned int t_max;	/* Sum of a[0] to a[alen - 1] */
+	uint16_t a[MTRTBL_SIZE];/* The acceleration table */
 };
 
 void build_motor_table(struct gl843_motor_setting *m,

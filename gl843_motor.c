@@ -1,41 +1,255 @@
+/*
+ *
+ * Copyright (C) 2009 Andreas Robinson <andr345 at gmail dot com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <errno.h>
 #include "gl843_util.h"
 #include "gl843_low.h"
 #include "gl843_motor.h"
 
-/* GL843_FEDCNT == step counter. Unit: 1/8th step, i.e 1 step <=> FEDCNT = 8 */
+/* Ref: gl843 datasheet, FMOVNO register
 
-int send_motor_accel(struct gl843_device *dev,
-		     int table, size_t len, uint16_t *a)
+Scanning with fast feed (FASTFED = 1)   Direction: ----->
+
+     moving to scan start                         scanning
+
+          FEEDL                       scan start            scan stop
+speed       |                              .                     .
+  |     ____v_____                 SCANFED .       LINCNT        .
+  |    /          \                   |    .          |          .
+  |   /            \              ____v____.__________v__________.
+  |  / <- FMOVNO -> \  STOPTIM   /         .                      \
+  | /                \    |     /<- STEPNO .             FSHDEC -> \
+  |/__________________\___v____/___________.________________________\__ distance
+
+
+
+Scanning without fast feed (FASTFED = 0)   Direction : ----->
+
+                                      scan start            scan stop
+speed                                      .                     .
+  |                FEEDL                   .       LINCNT        .
+  |                  |                     .          |          .
+  |   _______________v_____________________.__________v__________.
+  |  /                                     .                      \
+  | / <- STEPNO                            .             FSHDEC -> \
+  |/_______________________________________.________________________\__ distance
+
+
+
+Moving home after scanning    Direction: <-----
+
+speed
+  |____________________________________________________________________ distance
+  |\                                                                /
+  | \                                                              /
+  |  \ <- DECSEL,                                       FMOVNO -> /
+  |   \   FMOVDEC or FMOVNO (see LONGCURV)                       /
+  |    \________________________________________________________/
+
+
+
+Scanner backtracking when the buffer is full
+
+  |     scan start        buffer full
+  |            .  FWDSTEP   .
+  |            .      |     .
+  |            .______v_____.       direction: ------>
+  |           /              \
+  |          / <-- STEPNO --> \
+  |_________/__________________\______
+  |         \                  /
+  |          \  <- FASTNO ->  /
+  |           \              /
+  |            \  BWDSTEP   /       direction: <-----
+  |             \    |     /
+  |              \___v____/
+
+STEPNO:  Number of acceleration steps before scanning,  in motor table 1.
+FASTNO:  Number of acceleration steps in backtracking,  in motor table 2.
+FSHDEC:  Number of deceleration steps after scanning,   in motor table 3.
+FMOVNO:  Number of acceleration steps for fast feeding, in motor table 4.
+FMOVDEC: Number of deceleration steps for auto-go-home, in motor table 5.
+LONGCURV: If 0, FMOVNO and table 4 control deceleration for auto-go-home.
+          If 1, FMOVDEC, and table 5 control deceleration for auto-go-home.
+          See "Wall-hitting protection" in GL843 datasheet.
+FEEDL:   Number of feeding steps.
+SCANFED: Number of feeding steps before scanning.
+LINCNT:  Number of lines (steps) to scan.
+FWDSTEP:
+BWDSTEP:
+STEPTIM: Multiplier for STEPNO, FASTNO, FSHDEC, FMOVNO, FMOVDEC,
+         SCANFED, FWDSTEP, and BWDSTEP
+         The actual number of steps in each table or register is
+         <step_count> * 2^STEPTIM.
+DECSEL:  Number of deceleration steps after touching home sensor.
+         (Actual number of steps is 2^DECSEL.)
+STEPSEL: Motor step type for tables 1, 2 and 3
+FSTPSEL: Motor step type for tables 4 and 5
+
+TODO: When are DECSEL and FMOVEDEC used?
+ It seems unlikely that both are used at the same time as they define
+ the same thing. Right?
+
+Other bits:
+TB3TB1:   When set, table 1 replaces table 3
+TB5TB1:   When set, table 2 replaces table 5
+MULSTOP:  STOPTIM multiplier.
+*/
+
+
+
+/* Set up the scanning envelope for the CS4400F
+ *
+ * y_start: scanning start [inches]
+ * y_end:   scanning end [inches]
+ * type:    step type
+ * speed:   scanning speed [pixel clock ticks per step]
+ * fwdstep: scan at most fwdstep steps, then backtrack. 0 = disable
+ * exposure: LPERIOD * 2^TGTIME, for calculating Z1MOD and Z2MOD
+ */
+int setup_scanning_profile(struct gl843_device *dev,
+			   float y_start,
+			   float y_end,
+			   enum motor_step type,
+			   unsigned int speed,
+			   int fwdstep,
+			   unsigned int exposure)
 {
-	uint16_t buf[len];
-	uint16_t *p;
+	struct gl843_motor_setting move;
+	struct gl843_motor_setting scan;
 
-	if (table < 1 || table > 5)
-		return -1;
+	float Ks;	/* Number of scanning steps per inch */
+	float Km;	/* Number of moving steps per inch */
+	int Rms;	/* Km/Ks ratio */
 
-	if (host_is_big_endian()) {
-		int i;
-		for (i = 0; i < len; i++) {
-			buf[i] = ((a[i] >> 8) & 0xff) | ((a[i] & 0xff) << 8);
+	int scanfeed, feedl, lincnt;
+	unsigned int z1mod, z2mod;
+
+	/*
+	 * Set up motor acceleration
+	 */
+
+	cs4400f_get_fast_feed_motor_table(&move);
+	cs4400f_build_motor_table(&scan, speed, type);
+
+	struct regset_ent motor1[] = {
+		/* Misc */
+		{ GL843_STEPTIM, STEPTIM },
+		{ GL843_MULSTOP, 0 },
+		{ GL843_STOPTIM, 31 }, /* or 15. TODO: When? */
+		/* Scanning (table 1 and 3)*/
+		{ GL843_STEPSEL, scan.type },
+		{ GL843_STEPNO, scan.alen >> STEPTIM },
+		{ GL843_FSHDEC, scan.alen >> STEPTIM },
+		{ GL843_VRSCAN, scan.vref },
+		/* Backtracking (table 2) - use scanning table for now */
+		{ GL843_FASTNO, scan.alen >> STEPTIM },
+		{ GL843_VRBACK, scan.vref },
+		/* Fast feeding (table 4) and go-home (table 5) */
+		{ GL843_FSTPSEL, move.type },
+		{ GL843_FMOVNO, move.alen >> STEPTIM },
+		{ GL843_FMOVDEC, move.alen >> STEPTIM },
+		{ GL843_VRMOVE, move.vref },
+		{ GL843_VRHOME, move.vref },
+	};
+	set_regs(dev, motor1, ARRAY_SIZE(motor1));
+
+	/*
+	 * Set up moving distances
+	 */
+
+	Ks = dev->base_ydpi * (1 << scan.type);
+	Km = dev->base_ydpi * (1 << move.type);
+	Rms = Km / Ks;
+
+	scanfeed = 1020; /* Max value minimizes carriage vibration at scan start */
+	feedl = ((int) (Km * y_start + 0.5)) - 2 * move.alen;
+	feedl = feedl - Rms * (scan.alen + scanfeed);
+	if (feedl > 0) {
+		/* Use fast moving */
+		set_reg(dev, GL843_FASTFED, 1);
+		set_reg(dev, GL843_SCANFED, scanfeed >> STEPTIM);
+		set_reg(dev, GL843_FEEDL, feedl);
+	} else {
+		/* Don't use fast moving - no room to accelerate and decelerate. */
+		feedl = (int) (Ks * y_start + 0.5) - scan.alen;
+		if (feedl < 1) {
+			/* No room to accelerate */
+			feedl = 1;
+			DBG(DBG_error, "Scan start set too close to home position. "
+				"Minimum is %f mm at current resolution "
+				"and scanning speed.\n",
+				25.4 * (scan.alen + feedl) / Ks);
+			return -EINVAL;
 		}
-		p = buf;
-	} else {/* if (host_is_little_endian()) */
-		p = a;
+		set_reg(dev, GL843_FASTFED, 0);
+		set_reg(dev, GL843_FEEDL, feedl);
 	}
+
+	lincnt = ((int) (Ks * (y_end - y_start) + 0.5)) - 1;
+	if (lincnt < 1) {
+		DBG2(DBG_warn, "Start and end positions are the same.\n");
+		lincnt = 1;
+	}
+	set_reg(dev, GL843_LINCNT, lincnt);
+
 #if 0
-	printf("\nTable %d: %d steps\n\n", table, (int) len);
-	int i;
-	for (i = 0; i < len; i++) {
-		printf("%d ", p[i]);
-	}
-	printf("\n");
+	/* TODO. */
+	if (fwdstep > 0) {
+		if (fwdstep != STEPTIM_ALIGN_DN(fwdstep)) {
+			DBG2(DBG_error, "fwdstep is not divisible by 2^STEPTIM\n");
+			return -EINVAL;
+		}
+		set_reg(dev, GL843_FWDSTEP, fwdstep >> STEPTIM);
+		/* FIXME: bwdstep should probably be less than fwdstep */
+		set_reg(dev, GL843_BWDSTEP, fwdstep >> STEPTIM);
+		set_reg(dev, GL843_ACDCDIS, 0);
+	} else
 #endif
-	return xfer_bulk(dev, (uint8_t *) p,
-		len * sizeof(uint16_t), (table-1) * 2048, MOTOR_SRAM | BULK_OUT);
+		set_reg(dev, GL843_ACDCDIS, 1); /* Disable backtracking. */
+
+	/*
+	 * Set up sensor and motor timing relationships
+	 */
+
+	/* "scan" refers to table 1 */
+	z2mod = (scan.t_max + scan.a[scan.alen - 1] * scanfeed) % exposure;
+	/* "scan" refers to table 2 */
+	z1mod = (scan.t_max + scan.a[scan.alen - 1] * fwdstep) % exposure;
+
+	set_reg(dev, GL843_Z1MOD, z1mod);
+	set_reg(dev, GL843_Z2MOD, z2mod);
+
+	if (flush_regs(dev) < 0)
+		return -EIO;
+
+	send_motor_table(dev, 1, 1020, scan.a);
+	send_motor_table(dev, 2, 1020, scan.a);
+	send_motor_table(dev, 3, 1020, scan.a);
+	send_motor_table(dev, 4, 1020, move.a);
+	send_motor_table(dev, 5, 1020, move.a);
+
+	return 0;
 }
+
+#if 0
+
+/* GL843_FEDCNT == step counter. Unit: 1/8th step, i.e 1 step <=> FEDCNT = 8 */
 
 extern int usleep();
 
@@ -62,7 +276,7 @@ int do_move_test(struct gl843_device *dev)
 	int step = QUARTER_STEP;
 	cs4400f_build_motor_table(&m, speed, step);
 #endif
-	send_motor_accel(dev, 1, 1020, m.tbl);
+	send_motor_table(dev, 1, 1020, m.tbl);
 	printf("real length = %d, stepcnt = %d\n", m.len, m.stepcnt);
 
 	/* Clear FEDCNT */
@@ -72,22 +286,12 @@ int do_move_test(struct gl843_device *dev)
 	/* Move forward (defined by FEEDL below) */
 
 	set_reg(dev, GL843_STEPNO, m.stepcnt);
-	set_reg(dev, GL843_STEPTIM, STEPTIM_VAL);
+	set_reg(dev, GL843_STEPTIM, STEPTIM);
 	set_reg(dev, GL843_VRMOVE, m.vref);
 
 	set_reg(dev, GL843_FEEDL, 500 * (1 << m.step));
 	set_reg(dev, GL843_STEPSEL, m.step);
-#if 0
-	set_reg(dev, GL843_FSTPSEL, m.step);
-	set_reg(dev, GL843_FASTNO, m.step);
-	set_reg(dev, GL843_FSHDEC, m.step);
-	set_reg(dev, GL843_FMOVNO, m.step);
-	set_reg(dev, GL843_FMOVDEC, m.step);
 
-	set_reg(dev, GL843_VRBACK, m.vref);
-	set_reg(dev, GL843_VRSCAN, m.vref);
-	set_reg(dev, GL843_VRHOME, m.vref);
-#endif
 	printf("vref = %d\n", m.vref);
 
 	set_reg(dev, GL843_MTRREV, 0);
@@ -110,7 +314,6 @@ int do_move_test(struct gl843_device *dev)
 	printf("-----------\n");
 
 	set_reg(dev, GL843_FEEDL, 500 * (1 << m.step));
-
 
 	/* Back up again */
 #ifndef RESTORE_MOTOR_POS
@@ -142,84 +345,4 @@ int do_move_test(struct gl843_device *dev)
 	return 0;
 }
 
-/* Ref: gl843 datasheet, FMOVNO register
-
-Scanning with fast feed (FASTFED = 1)   Direction: ----->
-
-     moving to scan start                         scanning
-
-          FEEDL                       scan start            scan stop
-speed       |                              .                     .
-  |     ____v_____                 SCANFED .       LINCNT        .
-  |    /          \                   |    .          |          .
-  |   /            \              ____v____.__________v__________.
-  |  / <- FMOVNO -> \  STOPTIM   /         .                      \
-  | /                \    |     /<- STEPNO .             FSHDEC -> \
-  |/__________________\___v____/___________.________________________\__ distance
-
-Scanning without fast feed (FASTFED = 0)   Direction : ----->
-
-                                      scan start            scan stop
-speed                                      .                     .
-  |                FEEDL                   .       LINCNT        .
-  |                  |                     .          |          .
-  |   _______________v_____________________.__________v__________.
-  |  /                                     .                      \
-  | / <- STEPNO                            .             FSHDEC -> \
-  |/_______________________________________.________________________\__ distance
-
-Moving home after scanning    Direction: <-----
-
-speed
-  |____________________________________________________________________ distance
-  |\                                                                /
-  | \                                                              /
-  |  \ <- DECSEL, FMOVDEC                               FMOVNO -> /
-  |   \                                                          /
-  |    \________________________________________________________/
-
-
-Scanner backtracking when the buffer is full
-
-  |     scan start        buffer full
-  |            .  FWDSTEP   .
-  |            .      |     .
-  |            .______v_____.       direction: ------>
-  |           /              \
-  |          / <-- STEPNO --> \
-  |_________/__________________\______
-  |         \                  /
-  |          \  <- FASTNO ->  /
-  |           \              /
-  |            \  BWDSTEP   /       direction: <-----
-  |             \    |     /
-  |              \___v____/
-
-STEPNO:  Number of acceleration steps before scanning,  in motor table 1.
-FASTNO:  Number of acceleration steps in backtracking,  in motor table 2.
-FSHDEC:  Number of deceleration steps after scanning,   in motor table 3.
-FMOVNO:  Number of acceleration steps for fast feeding, in motor table 4.
-FMOVDEC: Number of deceleration steps for auto-go-home, in motor table 5.
-FEEDL:   Number of feeding steps.
-SCANFED: Number of feeding steps before scanning.
-LINCNT:  Number of lines (steps) to scan.
-FWDSTEP:
-BWDSTEP:
-STEPTIM: Multiplier for STEPNO, FASTNO, FSHDEC, FMOVNO, FMOVDEC,
-         SCANFED, FWDSTEP, and BWDSTEP
-         The actual number of steps in each table or register is
-         <step_count> * 2^STEPTIM.
-DECSEL:  Number of deceleration steps after touching home sensor.
-         (Actual number of steps is 2^DECSEL.)
-STEPSEL: Motor step type (full, half, quarter, eighth) for tables 1, 2 and 3
-FSTPSEL: Motor step type for tables 4 and 5
-
-TODO: When are DECSEL and FMOVEDEC used?
- It seems unlikely that both are used at the same time as they define
- the same thing. Right?
-
-Other bits:
-TB3TB1:   When set, table 1 replaces table 3
-TB5TB1:   When set, table 2 replaces table 5
-MULSTOP:  STOPTIM multiplier.
-*/
+#endif
