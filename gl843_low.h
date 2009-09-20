@@ -32,7 +32,8 @@ struct gl843_device
 	int min_dirty;	/* First dirty IO register */
 	int max_dirty;	/* Last dirty IO register */
 
-	float base_ydpi;/* Dots per inch at motor full step. */
+	unsigned int base_xdpi;/* Dots per inch in CCD */
+	unsigned int base_ydpi;/* Dots per inch at motor full step. */
 };
 
 /* xfer_bulk() and xfer_table() flags */
@@ -59,6 +60,7 @@ void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len);
 unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg);
 int flush_regs(struct gl843_device *dev);
 int read_regs(struct gl843_device *dev, ...);
+int read_reg(struct gl843_device *dev, enum gl843_reg reg);
 int write_afe(struct gl843_device *dev, int reg, int val);
 
 #endif /* _GL843_LOW_H_ */

@@ -20,12 +20,12 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
-#define ALIGN(v, a) ((v)+(a)-1 & ~((a)-1))
+#define ALIGN(v, a) (((v)+(a)-1) & ~((a)-1))
 #define ALIGN_DN(v, a) ((v) & ~((a)-1))
 /* Make v evenly divisible by 2^STEPTIM by rounding up */
 #define STEPTIM_ALIGN_UP(v) ALIGN((v), 1 << STEPTIM)
 /* Make v evenly divisible by 2^STEPTIM by rounding down */
-#define STEPTIM_ALIGN_DN(val) ALIGN_DN((v), 1 << STEPTIM)
+#define STEPTIM_ALIGN_DN(v) ALIGN_DN((v), 1 << STEPTIM)
 
 #define DBG_error0      0	/* unfilterable messages */
 #define DBG_error       1	/* fatal errors */
@@ -38,13 +38,10 @@
 #define DBG_data        8	/* log image data */
 
 #define DBG(level, msg, ...)	\
-	vprintf_dbg(level, __func__, 0, msg, __VA_ARGS__)
-
-#define DBG2(level, msg)	\
-	vprintf_dbg(level, __func__, 0, msg)
+	vprintf_dbg(level, __func__, 0, msg, ##__VA_ARGS__)
 
 #define DBG_LN(level, msg, ...)	\
-	vprintf_dbg(level, __func__, __LINE__, msg, __VA_ARGS__)
+	vprintf_dbg(level, __func__, __LINE__, msg, ##__VA_ARGS__)
 
 
 void vprintf_dbg(int level, const char *func, int line, const char *msg, ...)

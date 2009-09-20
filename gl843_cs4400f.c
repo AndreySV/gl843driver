@@ -86,7 +86,6 @@ void set_motor(struct gl843_device *dev)
 		{ GL843_Z1MOD, z1mod },		/* 0x60,0x61,0x62 */
 		{ GL843_Z2MOD, z2mod },		/* 0x63,0x64,0x65 */
 
-
 		/* Stepping motor */
 
 		/* 0x67 */
@@ -98,18 +97,21 @@ void set_motor(struct gl843_device *dev)
 		{ GL843_VRMOVE, vrmove },	/* 0 */
 		{ GL843_VRBACK, vrback },	/* 0, 1, 3, 4 or 7 */
 		{ GL843_VRSCAN, vrscan },	/* 0, 1, 4 or 5 */
-
 	};
 	set_regs(dev, motor, ARRAY_SIZE(motor));
 }
 
 void set_frontend(struct gl843_device *dev,
-		  int afe_dpi, int deep_color,
-		  int linesel, int maxwd,
+		  enum gl843_pixformat fmt,
+		  unsigned int width,
+		  unsigned int start_x,
+		  int dpi,
+		  int afe_dpi,
+		  int linesel,
 		  int tgtime, int lperiod,
 		  int expr, int expg, int expb)
 {
-	int scanmod = (afe_dpi == 0) ? 0 : 7; /* 7 = 16 sys clks / pixel */
+	int scanmod;
 	int filter = 0;
 
 	int tgw = 10, tgshld = 11;
@@ -119,6 +121,9 @@ void set_frontend(struct gl843_device *dev,
 
 	int vsmp = 11;
 	int rhi = 11, rlow = 13, ghi = 0, glow = 3, bhi = 6, blow = 9;
+
+	int deep_color, monochrome;
+	int strpixel, endpixel, maxwd;
 
 	/* afe_dpi = resolution seen by the A/D converter,
 	   1:1, 1:2, 1:4 of the CCD resolution */
@@ -136,13 +141,14 @@ void set_frontend(struct gl843_device *dev,
 		cph = 1; cpl = 3; rsh = 0; rsl = 2;
 
 		vsmp = 11;
-		rhi = 10; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 8;
+		//rhi = 10; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 8;
+		rhi = 0; rlow = 0; ghi = 0; glow = 0; bhi = 0; blow = 0;
 
 	} else if (afe_dpi == 2400) {
 
 		tgw = 21;
 		tgshld = 21;
-		//tgtime = 1;		// CCD line period = LPERIOD * 2
+		tgtime = 1;		// CCD line period = LPERIOD * 2
 
 		ck1map = 0xff00;	// 0b1111111100000000 (65280)
 		ck3map = 0xff00;	// 0b1111111100000000 (65280)
@@ -157,7 +163,7 @@ void set_frontend(struct gl843_device *dev,
 
 		tgw = 21;
 		tgshld = 21;
-		//tgtime = 1;		// CCD line period = LPERIOD * 2
+		tgtime = 1;		// CCD line period = LPERIOD * 2
 
 		ck1map = 0xffff;	// 0b1111111111111111 (65535)
 		ck3map = 0xffff;	// 0b1111111111111111 (65535)
@@ -169,11 +175,52 @@ void set_frontend(struct gl843_device *dev,
 		rhi = 2; rlow = 5; ghi = 8; glow = 11; bhi = 13; blow = 15;
 	}
 
+	strpixel = tgw * 32 + 2 * tgshld * 32 + start_x;
+	endpixel = strpixel + width;
+	DBG(DBG_info, "strpixel = %d, endpixel = %d\n", strpixel, endpixel);
+
+	switch (fmt) {
+	case PXFMT_LINEART:	/* 1 bit per pixel, black and white */
+	 	maxwd = ALIGN(width, 8) >> 3;
+		deep_color = 0;
+		monochrome = 1;
+		scanmod = 0;
+		break;
+	case PXFMT_GRAY8:	/* 8 bits per pixel, grayscale */
+		maxwd = width;
+		deep_color = 0;
+		monochrome = 1;
+		scanmod = 0;
+		break;
+	case PXFMT_GRAY16:	/* 16 bits per pixel, grayscale */
+		maxwd = 2 * width;
+		deep_color = 1;
+		monochrome = 1;
+		scanmod = 7;
+		break;
+	case PXFMT_RGB8:	/* 24 bits per pixel, RGB color */
+		maxwd = 3 * width;
+		deep_color = 0;
+		monochrome = 0;
+		scanmod = 0;
+		break;
+	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
+		maxwd = 6 * width;
+		deep_color = 1;
+		monochrome = 0;
+		scanmod = 7;
+		break;
+	}
+
+	maxwd = ((ALIGN(fmt * width, 8) >> 3) * dpi) / afe_dpi;
+
+	DBG(DBG_info, "maxwd = %d, dpi = %d\n", maxwd, dpi);
+
 	/* CCD/CIS and AFE settings */
 	struct regset_ent frontend[] = {
 		/* 0x04 */
-		{ GL843_BITSET, deep_color ? 1 : 0 },	/* 8-bit/16-bit data */
-		{ GL843_FILTER, filter },	/* 0 = color (1,2,3 = R,G,B) */
+		{ GL843_BITSET, deep_color },	/* 8-bit/16-bit data */
+		{ GL843_FILTER, 0 },		/* 0 = color (1,2,3 = R,G,B) */
 		/* 0x06 */
 		{ GL843_SCANMOD, scanmod },	/* 0 = 12 clocks/pixel (24bit mode) */
 						/* 7 = 16 clocks/pixel (48bit mode) */
@@ -199,9 +246,7 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_TGWTIME, 5 },	/*  TGW * 2^TGWTIME */
 		/* 0x1E */
 		{ GL843_LINESEL, linesel }, /* 0 or 1 */
-		/* 0x34,0x35,0x36,0x37,0x38,0x39 */
-		{ GL843_DUMMY, 20 },
-		{ GL843_MAXWD, maxwd },
+		/* 0x38,0x39 */
 		{ GL843_LPERIOD, lperiod },
 		/* 0x52,0x53,0x54,0x55,0x56,0x57  Depends on AFE clocks/pixel */
 		{ GL843_RHI, rhi },
@@ -224,6 +269,65 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_CK4MAP, ck4map },
 	};
 	set_regs(dev, frontend, ARRAY_SIZE(frontend));
+	flush_regs(dev);
+
+	int bwlo = 128, bwhi = 128; /* TODO: Read thresholds from img struct */
+
+	struct regset_ent format[] = {
+
+		/* 0x2C,0x2D,0x30,0x31,0x32,0x33 */
+		{ GL843_DPISET, dpi },
+		{ GL843_STRPIXEL, strpixel },
+		{ GL843_ENDPIXEL, endpixel },
+		/* 0x34,0x35,0x36,0x37 */
+		{ GL843_DUMMY, 20 },
+		{ GL843_MAXWD, maxwd },
+
+		/* 0x01 */
+		{ GL843_TRUEGRAY, monochrome },
+		/* 0xA3,0xA4,0xA5 */
+		{ GL843_TRUER, (int) (0.2989 * 255) },
+		{ GL843_TRUEG, (int) (0.5870 * 255) },
+		{ GL843_TRUEB, (int) (0.1140 * 255) },
+
+		/* 0x04 */
+		{ GL843_LINEART, fmt == PXFMT_LINEART ? 1 : 0 },
+		/* 0x2E,0x2F */
+		{ GL843_BWHI, bwhi },
+		{ GL843_BWLOW, bwlo },
+	};
+	set_regs(dev, format, ARRAY_SIZE(format));
+	flush_regs(dev);
+}
+
+void set_postprocessing(struct gl843_device *dev)
+{
+	int dvdset = 0, shdarea = 0, aveenb = 1, gmmenb = 0, decflag = 0;
+	/* Postprocessing encompasses all pixel processing between
+	 * the analog front end (AFE) and USB interface */
+	struct regset_ent postprocessing[] = {
+		/* 0x01 */
+		{ GL843_DVDSET, dvdset },
+		{ GL843_STAGGER, 0 },
+		{ GL843_COMPENB, 0 },
+		{ GL843_SHDAREA, shdarea },
+		/* 0x03 */
+		{ GL843_AVEENB, aveenb }, 	/* X scaling: 1=avg, 0=del */
+		/* 0x05 */
+		{ GL843_GMMENB, gmmenb },
+		/* 0x06 */
+		{ GL843_GAIN4, 0 },		/* 0/1: shading gain of 4/8. */
+		/* 0x08 */
+		{ GL843_DECFLAG, decflag },
+		{ GL843_GMMFFR, 0 },
+		{ GL843_GMMFFG, 0 },
+		{ GL843_GMMFFB, 0 },
+		{ GL843_GMMZR, 0 },
+		{ GL843_GMMZG, 0 },
+		{ GL843_GMMZB, 0 },
+	};
+	set_regs(dev, postprocessing, ARRAY_SIZE(postprocessing));
+	flush_regs(dev);
 }
 
 #define CHK(x)					\
@@ -231,8 +335,6 @@ void set_frontend(struct gl843_device *dev,
 		if ((x) < 0)			\
 			goto chk_failed;	\
 	} while (0)
-
-
 
 int init_afe(struct gl843_device *dev)
 {
@@ -274,7 +376,7 @@ int init_afe(struct gl843_device *dev)
 
 	return 0;
 chk_failed:
-	DBG2(DBG_error, "Cannot configure the analog frontend (AFE).\n");
+	DBG(DBG_error, "Cannot configure the analog frontend (AFE).\n");
 	return -1;
 }
 
@@ -480,7 +582,7 @@ void setup_scanner(struct gl843_device *dev)
 	};
 	set_regs(dev, static_setup, ARRAY_SIZE(static_setup));
 
-	set_sysclk(dev, SYSCLK_60_MHZ);
+	set_sysclk(dev, SYSCLK_48_MHZ);
 	set_lamp(dev, LAMP_OFF, 0);
 	flush_regs(dev);
 
@@ -554,7 +656,7 @@ void build_motor_table(struct gl843_motor_setting *m,
 	 * If stepcnt = 255 & steptim = 2 then
 	 * max table length is 255*2^2 = 1020 */
 
-	m->alen = STEPTIM_ALIGN_UP(n);
+	m->alen = ALIGN(n, 1 << STEPTIM);
 
 	/* Calculate total acceleration time (needed for Z1MOD, Z2MOD) */
 	m->t_max = 0;
@@ -568,7 +670,7 @@ void cs4400f_build_motor_table(struct gl843_motor_setting *m,
 {
 	switch (step) {
 	case FULL_STEP:
-		DBG2(DBG_warn, "Full steps do not work well with CS4400F. "
+		DBG(DBG_warn, "Full steps do not work well with CS4400F. "
 			" Will set fastest half step mode instead.\n");
 		build_motor_table(m, HALF_STEP, 4500, 175, 0);
 		break;
@@ -664,50 +766,6 @@ void cs4400f_get_fast_feed_motor_table(struct gl843_motor_setting *m)
 {
 	cs4400f_build_motor_table(m, 175, HALF_STEP);
 }
-
-#if 0
-void set_postprocessing(struct gl843_device *dev)
-{
-	/* Postprocessing encompasses all pixel processing between
-	 * the analog front end (AFE) and USB interface */
-	struct regset_ent postprocessing[] = {
-		/* 0x01 */
-		{ GL843_DVDSET, dvdset },
-		{ GL843_STAGGER, 0 },
-		{ GL843_COMPENB, 0 },
-		{ GL843_TRUEGRAY, 0 },
-		{ GL843_SHDAREA, shdarea },
-		/* 0x03 */
-		{ GL843_AVEENB, aveenb }, 	/* X scaling: 1=avg, 0=del */
-		/* 0x04 */
-		{ GL843_LINEART, lineart },	/* 0 = RGB/gray, 1 = lineart mode */
-		/* 0x05 */
-		{ GL843_GMMENB, gmmenb },
-		/* 0x06 */
-		{ GL843_GAIN4, 0 },		/* 0/1: shading gain of 4/8. */
-		/* 0x08 */
-		{ GL843_DECFLAG, decflag },
-		{ GL843_GMMFFR, gmmffr },
-		{ GL843_GMMFFG, gmmffg },
-		{ GL843_GMMFFB, gmmffb },
-		{ GL843_GMMZR, gmmzr },
-		{ GL843_GMMZG, gmmzg },
-		{ GL843_GMMZB, gmmzb },
-		/* 0x2E,0x2F */
-		{ GL843_BWHI, bwhi },	/* lineart low/high thresholds */
-		{ GL843_BWLOW, bwlo },	/* with hysteresis */
-		/* 0x2C,0x2D, 0x30,0x31,0x32,0x33 */
-		{ GL843_DPISET, dpiset },
-		{ GL843_STRPIXEL, strpixel },
-		{ GL843_ENDPIXEL, endpixel },
-		/* 0xA3,0xA4,0xA5 */
-		{ GL843_TRUER, 0 },
-		{ GL843_TRUEG, 0 },
-		{ GL843_TRUEB, 0 },
-	};
-	set_regs(dev, postprocessing, ARRAY_SIZE(postprocessing));
-}
-#endif
 
 #if 0
 	/* Command flags */

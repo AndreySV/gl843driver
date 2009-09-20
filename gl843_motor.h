@@ -33,6 +33,14 @@ void build_motor_table(struct gl843_motor_setting *m,
 			uint16_t max_speed,
 			uint8_t vref);
 
+int setup_scanning_profile(struct gl843_device *dev,
+			   float y_start,
+			   float y_end,
+			   int y_dpi,
+			   enum motor_step type,
+			   int fwdstep,
+			   unsigned int exposure);
+
 int do_move_test(struct gl843_device *dev);
 
 #endif /* _GL843_MOTOR_H_ */

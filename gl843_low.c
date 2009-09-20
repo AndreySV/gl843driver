@@ -62,6 +62,7 @@ void create_device(struct gl843_device *dev)
 		dev->ioregs[i].ioreg = i;
 	}
 	// CS4400F specific
+	dev->base_xdpi = 4800;
 	dev->base_ydpi = 1200;
 }
 
@@ -165,6 +166,8 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 	const int to = 10000;	/* USB timeout [ms] */
 	int reset_addr = 0;
 
+	DBG(DBG_info, "flags = %x, buf = %p, size = %lu\n", flags, buf, size);
+
 	switch (flags & (GAMMA_SRAM | MOTOR_SRAM | IMG_DRAM)) {
 	case IMG_DRAM:
 		port = (dir == BULK_IN) ? GL843__RAMRDDATA_ : GL843__RAMWRDATA_;
@@ -221,17 +224,25 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 
 	int total = 0;
 	while (size > 0) {
+		int outlen = 0;
 		/* The Windows driver for Canoscan 4400F requests
 		 * 16KB chunks, so we do the same. */
 		len = (size > 16384) ? 16384 : size;
-		DBG(DBG_io2, "transferring %d bytes....", len);
-		ret = libusb_bulk_transfer(h, ep, buf, len, &len, to);
-		total += len;
-		DBG(DBG_io2, "or actually %d bytes. (%d total)\n", len, total);
-		if (ret < 0)
+		DBG(DBG_io2, "transferring %d bytes ...\n", len);
+		ret = libusb_bulk_transfer(h, ep, buf, len, &outlen, to);
+		total += outlen;
+		DBG(DBG_io2, "%d bytes actually transferred. (%d total)\n",
+			outlen, total);
+		if (ret == LIBUSB_ERROR_OVERFLOW && len > outlen) {
+			DBG(DBG_io2, "overflow detected. len = %d > outlen = %d\n",
+				len, outlen);
+			/* Ignore underflows for now. FIXME. */
+		} else if (ret < 0)
 			goto usb_error;
-		size -= len;
-		buf += len;
+		size -= outlen;
+		buf += outlen;
+		if (outlen < len)
+			break;
 	}
 
 	/* Do this or else the motor/gamma doesn't get written */
@@ -377,6 +388,18 @@ usb_error:
 	return ret;
 }
 
+
+void mark_devreg_dirty(struct gl843_device *dev, enum gl843_reg reg)
+{
+	const struct regmap_ent *rmap;
+	if (reg > dev->max_devreg)
+		return;
+	rmap = dev->regmap + dev->regmap_index[reg];
+	for (; rmap->devreg == reg; ++rmap) {
+		mark_ioreg_dirty(dev, rmap->ioreg, 0xff);
+	}
+}
+
 /* Read a set of device or IO registers from the scanner.
  *
  * This function takes a variable number of gl843_reg enums.
@@ -390,19 +413,23 @@ usb_error:
 int read_regs(struct gl843_device *dev, ...)
 {
 	int ret;
-	int reg;
+	int reg = 0;
 	va_list ap;
 	va_start(ap, dev);
 
 	/* Find the IO registers we need to read, and mark them as dirty. */
 	while ((reg = va_arg(ap, int)) >= 0) {
+#if 0
 		const struct regmap_ent *rmap;
 		if (reg > dev->max_devreg)
 			continue;
 		rmap = dev->regmap + dev->regmap_index[reg];
+
 		for (; rmap->devreg == reg; ++rmap) {
 			mark_ioreg_dirty(dev, rmap->ioreg, 0xff);
 		}
+#endif
+		mark_devreg_dirty(dev, reg);
 	}
 	va_end(ap);
 
@@ -420,6 +447,18 @@ int read_regs(struct gl843_device *dev, ...)
 usb_error:
 	/* Don't print an error message. read_ioreg() already did. */
 	return ret;
+}
+
+/* Read a single scanner register.
+ * Returns the register value (>= 0) on success, or < 0 on failure.
+ */
+int read_reg(struct gl843_device *dev, enum gl843_reg reg)
+{
+	int ret;
+	ret = read_regs(dev, reg);
+	if (ret < 0)
+		return ret;
+	return get_reg(dev, reg);
 }
 
 /* Write a configuration register in the analog front end (the A/D-converter) */

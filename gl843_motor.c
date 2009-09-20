@@ -112,6 +112,10 @@ MULSTOP:  STOPTIM multiplier.
 */
 
 
+void cs4400f_build_motor_table(struct gl843_motor_setting *m,
+	unsigned int speed, enum motor_step step);
+void cs4400f_get_fast_feed_motor_table(struct gl843_motor_setting *m);
+
 
 /* Set up the scanning envelope for the CS4400F
  *
@@ -125,8 +129,8 @@ MULSTOP:  STOPTIM multiplier.
 int setup_scanning_profile(struct gl843_device *dev,
 			   float y_start,
 			   float y_end,
+			   int y_dpi,
 			   enum motor_step type,
-			   unsigned int speed,
 			   int fwdstep,
 			   unsigned int exposure)
 {
@@ -135,10 +139,17 @@ int setup_scanning_profile(struct gl843_device *dev,
 
 	float Ks;	/* Number of scanning steps per inch */
 	float Km;	/* Number of moving steps per inch */
-	int Rms;	/* Km/Ks ratio */
+	float Rms;	/* Km/Ks ratio */
 
+	unsigned int speed;
 	int scanfeed, feedl, lincnt;
 	unsigned int z1mod, z2mod;
+
+	speed = exposure * y_dpi / (dev->base_ydpi << type);
+
+	DBG(DBG_info, "y_start = %f, y_end = %f, type = %d, speed = %u, "
+		"fwdstep = %d, exposure = %u\n",
+		y_start, y_end, type, speed, fwdstep, exposure);
 
 	/*
 	 * Set up motor acceleration
@@ -147,11 +158,13 @@ int setup_scanning_profile(struct gl843_device *dev,
 	cs4400f_get_fast_feed_motor_table(&move);
 	cs4400f_build_motor_table(&scan, speed, type);
 
+	DBG(DBG_info, "scan.alen = %d, move.alen = %d\n", scan.alen, move.alen);
+
 	struct regset_ent motor1[] = {
 		/* Misc */
 		{ GL843_STEPTIM, STEPTIM },
 		{ GL843_MULSTOP, 0 },
-		{ GL843_STOPTIM, 31 }, /* or 15. TODO: When? */
+		{ GL843_STOPTIM, 15 }, /* or 15. TODO: When? */
 		/* Scanning (table 1 and 3)*/
 		{ GL843_STEPSEL, scan.type },
 		{ GL843_STEPNO, scan.alen >> STEPTIM },
@@ -164,6 +177,7 @@ int setup_scanning_profile(struct gl843_device *dev,
 		{ GL843_FSTPSEL, move.type },
 		{ GL843_FMOVNO, move.alen >> STEPTIM },
 		{ GL843_FMOVDEC, move.alen >> STEPTIM },
+		{ GL843_DECSEL, 1 }, /* Windows driver: 0 or 1 */
 		{ GL843_VRMOVE, move.vref },
 		{ GL843_VRHOME, move.vref },
 	};
@@ -173,13 +187,14 @@ int setup_scanning_profile(struct gl843_device *dev,
 	 * Set up moving distances
 	 */
 
-	Ks = dev->base_ydpi * (1 << scan.type);
-	Km = dev->base_ydpi * (1 << move.type);
+	Ks = dev->base_ydpi << scan.type;
+	Km = dev->base_ydpi << move.type;
 	Rms = Km / Ks;
 
 	scanfeed = 1020; /* Max value minimizes carriage vibration at scan start */
 	feedl = ((int) (Km * y_start + 0.5)) - 2 * move.alen;
 	feedl = feedl - Rms * (scan.alen + scanfeed);
+
 	if (feedl > 0) {
 		/* Use fast moving */
 		set_reg(dev, GL843_FASTFED, 1);
@@ -191,9 +206,10 @@ int setup_scanning_profile(struct gl843_device *dev,
 		if (feedl < 1) {
 			/* No room to accelerate */
 			feedl = 1;
-			DBG(DBG_error, "Scan start set too close to home position. "
-				"Minimum is %f mm at current resolution "
-				"and scanning speed.\n",
+			DBG(DBG_error, "Scan start @ %f mm, is too close to "
+				"the home position. Minimum is %f mm at "
+				"current resolution and scanning speed.\n",
+				25.4 * y_start,
 				25.4 * (scan.alen + feedl) / Ks);
 			return -EINVAL;
 		}
@@ -201,18 +217,18 @@ int setup_scanning_profile(struct gl843_device *dev,
 		set_reg(dev, GL843_FEEDL, feedl);
 	}
 
-	lincnt = ((int) (Ks * (y_end - y_start) + 0.5)) - 1;
+	lincnt = ((int) (Ks * (y_end - y_start) + 0.5));
 	if (lincnt < 1) {
-		DBG2(DBG_warn, "Start and end positions are the same.\n");
+		DBG(DBG_warn, "Start and end positions are the same.\n");
 		lincnt = 1;
 	}
 	set_reg(dev, GL843_LINCNT, lincnt);
+	printf("feedl = %d, lincnt = %d\n", feedl, lincnt);
 
-#if 0
 	/* TODO. */
 	if (fwdstep > 0) {
 		if (fwdstep != STEPTIM_ALIGN_DN(fwdstep)) {
-			DBG2(DBG_error, "fwdstep is not divisible by 2^STEPTIM\n");
+			DBG(DBG_error, "fwdstep is not divisible by 2^STEPTIM\n");
 			return -EINVAL;
 		}
 		set_reg(dev, GL843_FWDSTEP, fwdstep >> STEPTIM);
@@ -220,7 +236,6 @@ int setup_scanning_profile(struct gl843_device *dev,
 		set_reg(dev, GL843_BWDSTEP, fwdstep >> STEPTIM);
 		set_reg(dev, GL843_ACDCDIS, 0);
 	} else
-#endif
 		set_reg(dev, GL843_ACDCDIS, 1); /* Disable backtracking. */
 
 	/*

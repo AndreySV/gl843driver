@@ -18,11 +18,23 @@ enum gl843_sysclk {
 	SYSCLK_60_MHZ = 4
 };
 
+enum gl843_pixformat {
+	PXFMT_LINEART = 1,	/* 1 bit per pixel, black and white */
+	PXFMT_GRAY8 = 8,	/* 8 bits per pixel, grayscale */
+	PXFMT_GRAY16 = 16,	/* 16 bits per pixel, grayscale */
+	PXFMT_RGB8 = 24,	/* 24 bits per pixel, RGB color */
+	PXFMT_RGB16 = 48,	/* 48 bits per pixel, RGB color */
+};
+
 void set_sysclk(struct gl843_device *dev, enum gl843_sysclk clkset);
 void set_lamp(struct gl843_device *dev, enum gl843_lamp state, int timeout);
 void set_frontend(struct gl843_device *dev,
-		  int afe_dpi, int deep_color,
-		  int linesel, int maxwd,
+		  enum gl843_pixformat fmt,
+		  unsigned int width,
+		  unsigned int start_x,
+		  int dpi,
+		  int afe_dpi,
+		  int linesel,
 		  int tgtime, int lperiod,
 		  int expr, int expg, int expb);
 void set_motor(struct gl843_device *dev);
