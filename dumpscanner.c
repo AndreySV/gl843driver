@@ -264,6 +264,8 @@ int process_urb(struct usbmon_packet *hdr, unsigned char *data, FILE *file)
 		fprintf(stderr, "Unknown URB: %c%c%c:%d",
 			ev, type, dir, ep);
 		if (has_setup) {
+			/* Unhandled URB with setup,
+			 * save usbmon packet header and data. */
 			int rtype = hdr->s.setup[0];
 			int req = hdr->s.setup[1];
 			int val = (hdr->s.setup[3] << 8) | hdr->s.setup[2];
@@ -273,12 +275,21 @@ int process_urb(struct usbmon_packet *hdr, unsigned char *data, FILE *file)
 			fprintf(stderr, " s %02x %02x %04x %04x %04x",
 				rtype, req, val, idx, len);
 
-			fprintf(stderr, " = 0x%02x", *data);
+			if (len > 0) {
+				fprintf(stderr, " =");
+				for (i = 0; i < len; i++) {
+					fprintf(stderr, " 0x%02x", data[i]);
+				}
+			}
+			buf = (uint8_t *) hdr;
+			blen = sizeof(*hdr) + len;
+		} else {
+			/* Unhandled URB without a setup,
+			 * just save the usbmon packet header */
+			buf = (uint8_t *) hdr;
+			blen = sizeof(*hdr);
 		}
 		fprintf(stderr, "\n");
-		/* Unhandled URB, just save the usbmon packet header */
-		buf = (uint8_t *) hdr;
-		blen = sizeof(*hdr);
 	}
 
 	/* Write the parsed scanner command to disk */

@@ -124,6 +124,14 @@ int __attribute__ ((pure)) host_is_little_endian()
 	return native_endianness() == 1;
 }
 
+void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len)
+{
+	int i;
+	for (i = 0; i < len; i++) {
+		dst[i] = ((src[i] >> 8) & 0xff) | ((src[i] & 0xff) << 8);
+	}
+}
+
 const char *sanei_libusb_strerror(int errcode)
 {
 	switch (errcode) {

@@ -13,6 +13,7 @@
  * Lesser General Public License for more details.
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -30,6 +31,9 @@
 #define VAL_BUF		0x82
 #define VAL_SET_REG	0x83
 #define VAL_READ_REG	0x84
+
+#define BULK_IN		0
+#define BULK_OUT	1
 
 static struct ioregister gl843_ioregs[GL843_MAX_IOREG+1];
 
@@ -66,141 +70,96 @@ void create_device(struct gl843_device *dev)
 	dev->base_ydpi = 1200;
 }
 
-/*** USB functions. TODO: Use SANE's USB API. ***/
+/*** USB functions. ***/
 
-/* Write to an I/O register from the scanner.
- *
- * ioreg: register address, 0x00 - dev->max_ioreg
- * val:   8-bit unsigned value
- * Returns: register value, >= 0 on success, or < 0 on failure.
- */
-int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
+/* libusb_control_transfer wrapper that retries on interrupted system calls. */
+static int usb_ctrl_xfer(libusb_device_handle *dev_handle,
+			 uint8_t bmRequestType,
+			 uint8_t bRequest,
+			 uint16_t wValue,
+			 uint16_t wIndex,
+			 unsigned char *data,
+			 uint16_t wLength,
+			 unsigned int timeout)
+{
+	int i, ret;
+
+	for (i = 0; i < 100; i++) {
+		ret = libusb_control_transfer(dev_handle, bmRequestType,
+			bRequest, wValue, wIndex, data, wLength, timeout);
+		if (ret != LIBUSB_ERROR_INTERRUPTED)
+			break;
+		usleep(1000);
+	}
+	return ret;
+}
+
+/* libusb_bulk_transfer wrapper that retries on interrupted system calls. */
+static int usb_bulk_xfer(struct libusb_device_handle *dev_handle,
+			 unsigned char endpoint,
+			 unsigned char *data,
+			 int length,
+			 int *transferred,
+			 unsigned int timeout)
+{
+	int i, ret;
+
+	for (i = 0; i < 100; i++) {
+		ret = libusb_bulk_transfer(dev_handle, endpoint, data,
+			length, transferred, timeout);
+		if (ret != LIBUSB_ERROR_INTERRUPTED)
+			break;
+		usleep(1000);
+	}
+	return ret;
+}
+
+static int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
 {
 	int ret;
 	uint8_t buf[2] = { ioreg, val };
 	libusb_device_handle *h = dev->libusb_handle;
 	const int to = 500;	/* USB timeout [ms] */
 
-	DBG(DBG_io2, "reg = 0x%02x, val = 0x%02x\n", ioreg, val);
+	DBG(DBG_io2, "IOREG(0x%02x) = %u (0x%02x)\n", ioreg, val, val);
 
-	if (ioreg > dev->max_ioreg)
-		goto bad_regnum;
-	ret = libusb_control_transfer(h, REQ_OUT, REQ_BUF, VAL_SET_REG, 0,
-		buf, 2, to);
-	if (ret < 0)
-		goto usb_error;
-
+	ret = usb_ctrl_xfer(h, REQ_OUT, REQ_BUF, VAL_SET_REG, 0, buf, 2, to);
 	dev->ioregs[ioreg].val = val;
 	dev->ioregs[ioreg].dirty = 0;
-	return 0;
-
-bad_regnum:
-	DBG(DBG_error, "bad IO register 0x%02x\n", ioreg);
-	return -EINVAL;
-usb_error:
-	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
-	return -EIO;
+	return ret;
 }
 
-/* Read an I/O register from the scanner.
- *
- * ioreg: register address
- * Returns: register value, register value >= 0 on success, or < 0 on failure.
- */
-int read_ioreg(struct gl843_device *dev, uint8_t ioreg)
+static int read_ioreg(struct gl843_device *dev, uint8_t ioreg)
 {
 	int ret;
 	uint8_t buf[2] = { ioreg, 0 };
 	libusb_device_handle *h = dev->libusb_handle;
 	const int to = 500;	/* USB timeout [ms] */
 
-	DBG(DBG_io2, "reg = 0x%02x\n", ioreg);
-
-	if (ioreg > dev->max_ioreg)
-		goto bad_regnum;
-
-	ret = libusb_control_transfer(h, REQ_OUT, REQ_REG, VAL_SET_REG,
-		0, buf, 1, to);
-	if (ret < 0)
-		goto usb_error;
-	ret = libusb_control_transfer(h, REQ_IN, REQ_REG, VAL_READ_REG,
-		0, buf, 1, to);
-	if (ret < 0)
-		goto usb_error;
-
+	CHK(usb_ctrl_xfer(h, REQ_OUT, REQ_REG, VAL_SET_REG, 0, buf, 1, to));
+	CHK(usb_ctrl_xfer(h, REQ_IN, REQ_REG, VAL_READ_REG, 0, buf, 1, to));
 	dev->ioregs[ioreg].val = buf[0];
 	dev->ioregs[ioreg].dirty = 0;
 
-	DBG(DBG_io2, "val = 0x%02x\n", buf[0]);
-
+	DBG(DBG_io2, "IOREG(0x%02x) = %u (0x%02x)\n", ioreg, buf[0], buf[0]);
 	return buf[0];
-
-bad_regnum:
-	DBG(DBG_error, "bad IO register 0x%02x\n", ioreg);
-	return -EINVAL;
-usb_error:
-	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
-	return -EIO;
+chk_failed:
+	return ret;
 }
 
-/* Perform a USB bulk transfer to/from the scanner.
- *
- * buf:  data buffer
- * size: number of bytes to transfer
- * addr: address in scanner RAM
- * flags: Set direction and memory type by bitwise or'ing of one of
- *        the direction flags and one of the memory area flags, below.
- *        Direction flags:   BULK_IN or BULK_OUT
- *	  Memory area flags: GAMMA_SRAM or MOTOR_SRAM or IMG_DRAM
- *
- * Returns: 0 on success, < 0 on failure.
- */
-int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int flags)
+static int write_bulk_setup(struct gl843_device *dev,
+			    enum gl843_reg port, size_t size, int dir)
 {
 	int ret;
-	int dir = flags & (BULK_IN | BULK_OUT);
-	int ep, port, len;
 	uint8_t ioreg;
 	uint8_t setup[8];
 	libusb_device_handle *h = dev->libusb_handle;
 	const int to = 10000;	/* USB timeout [ms] */
-	int reset_addr = 0;
-
-	DBG(DBG_info, "flags = %x, buf = %p, size = %lu\n", flags, buf, size);
-
-	switch (flags & (GAMMA_SRAM | MOTOR_SRAM | IMG_DRAM)) {
-	case IMG_DRAM:
-		port = (dir == BULK_IN) ? GL843__RAMRDDATA_ : GL843__RAMWRDATA_;
-		set_reg(dev, GL843_RAMADDR, addr);
-		break;
-	case GAMMA_SRAM:
-		port = (dir == BULK_IN) ? GL843__GMMRDDATA_ : GL843__GMMWRDATA_;
-		set_reg(dev, GL843_MTRTBL, 0);
-		set_reg(dev, GL843_GMMADDR, addr);
-		reset_addr = 1;
-		break;
-	case MOTOR_SRAM:
-		port = (dir == BULK_IN) ? GL843__GMMRDDATA_ : GL843__GMMWRDATA_;
-		set_reg(dev, GL843_MTRTBL, 1);
-		set_reg(dev, GL843_GMMADDR, addr);
-		reset_addr = 1;
-		break;
-	default:
-		DBG(DBG_io, "invalid flags = %d\n", flags);
-		return -EINVAL;
-	}
-	if (flush_regs(dev) < 0)
-		return -EIO;
-
-	DBG(DBG_io, "%s addr = 0x%x, size = %zu, flags = %d\n",
-		(dir == BULK_IN) ? "IN" : "OUT", addr, size, flags);
-
-	/* Send setup */
 
 	ioreg = dev->regmap[dev->regmap_index[port]].ioreg;
 	DBG(DBG_io2, "Writing setup packet to ioreg = %x\n", ioreg);
 
-	setup[0] = dir;
+	setup[0] = dir; /* dir = BULK_IN or BULK_OUT */
 	setup[1] = 0;	/* RAM */
 	setup[2] = VAL_BUF & 0xff;
 	setup[3] = (VAL_BUF >> 8) & 0xff;
@@ -209,81 +168,127 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size, int addr, int
 	setup[6] = (size >> 16) & 0xff;
 	setup[7] = (size >> 24) & 0xff;
 
-	ret = libusb_control_transfer(h, REQ_OUT, REQ_REG, VAL_SET_REG,
-		0, &ioreg, 1, to);
-	if (ret < 0)
-		goto usb_error;
-	ret = libusb_control_transfer(h, REQ_OUT, REQ_BUF, VAL_BUF,
-		0, setup, sizeof(setup), to);
-	if (ret < 0)
-		goto usb_error;
+	CHK(usb_ctrl_xfer(h, REQ_OUT, REQ_REG, VAL_SET_REG, 0, &ioreg, 1, to));
+	CHK(usb_ctrl_xfer(h, REQ_OUT, REQ_BUF, VAL_BUF, 0, setup, 8, to));
+	return 0;
+
+chk_failed:
+	return ret;
+}
+
+/* Transfer a motor acceleration table or gamma table to the scanner. */
+static int send_table(struct gl843_device *dev, int table,
+		uint16_t *tbl, size_t len, int is_motortbl)
+{
+	int i, ret, addr;
+	uint8_t *p, *buf;
+	libusb_device_handle *h = dev->libusb_handle;
+	const int to = 10000;	/* USB timeout [ms] */
+	int size = len*2;
+
+	addr = (table-1) * (is_motortbl ? 2048 : 256);
+
+	buf = malloc(len * 2);
+	if (!buf)
+		return -ENOMEM;
+
+	for (i = 0, p = buf; i < len; i++) {
+		*p++ = tbl[i] & 0xff;
+		*p++ = tbl[i] >> 8;
+	}
+
+	DBG(DBG_io, "Writing %zu entries to %s table %d.\n", len,
+		is_motortbl ? "motor" : "gamma", table);
+
+	set_reg(dev, GL843_MTRTBL, is_motortbl);
+	set_reg(dev, GL843_GMMADDR, addr);
+	CHK(flush_regs(dev));
+	CHK(write_bulk_setup(dev, GL843__GMMWRDATA_, size, BULK_OUT));
+	CHK(usb_bulk_xfer(h, 2, buf, size, &size, to));
+	set_reg(dev, GL843_MTRTBL, 0);
+	set_reg(dev, GL843_GMMADDR, 0);
+	CHK(flush_regs(dev));
+	free(buf);
+
+	return 0;
+
+chk_failed:
+	free(buf);
+	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
+	return -EIO;
+}
+
+int send_motor_table(struct gl843_device *dev,
+		     int table,
+		     size_t len,
+		     uint16_t *a)
+{
+	return send_table(dev, table, a, len, 1);
+}
+
+int send_gamma_table(struct gl843_device *dev,
+		     int table,
+		     size_t len,
+		     uint16_t *g)
+{
+	return send_table(dev, table, g, len, 0);
+}
+
+int send_shading(struct gl843_device *dev, uint8_t *buf, size_t size, int addr)
+{
+	int ret;
+	libusb_device_handle *h = dev->libusb_handle;
+	const int to = 10000;	/* USB timeout [ms] */
+	int outsize;
+
+	CHK(write_reg(dev, GL843_RAMADDR, addr));
+	CHK(write_bulk_setup(dev, GL843__RAMWRDATA_, size, BULK_OUT));
+	CHK(usb_bulk_xfer(h, 2, buf, size, &outsize, to));
+	return 0;
+chk_failed:
+	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
+	return -EIO;
+}
+
+int recv_image(struct gl843_device *dev, uint8_t *buf, size_t size, int addr)
+{
+	int ret;
+	int ep, port, len;
+	libusb_device_handle *h = dev->libusb_handle;
+	const int to = 10000;	/* USB timeout [ms] */
+
+	DBG(DBG_io, "buf = %p, addr = 0x%x, size = %zu\n", buf, addr, size);
+
+	write_reg(dev, GL843_RAMADDR, addr);
+	CHK(write_bulk_setup(dev, GL843__RAMRDDATA_, size, BULK_IN));
 
 	/* Transfer bulk data */
-
-	ep = (dir == BULK_OUT) ? 2 : 0x81;
 
 	int total = 0;
 	while (size > 0) {
 		int outlen = 0;
-		/* The Windows driver for Canoscan 4400F requests
-		 * 16KB chunks, so we do the same. */
-		len = (size > 16384) ? 16384 : size;
-		DBG(DBG_io2, "transferring %d bytes ...\n", len);
-		ret = libusb_bulk_transfer(h, ep, buf, len, &outlen, to);
+		len = size;
+		DBG(DBG_io2, "receiving %d bytes ...\n", len);
+		ret = usb_bulk_xfer(h, 0x81, buf, len, &outlen, to);
 		total += outlen;
-		DBG(DBG_io2, "%d bytes actually transferred. (%d total)\n",
+		DBG(DBG_io2, "%d bytes actually received. (%d total)\n",
 			outlen, total);
 		if (ret == LIBUSB_ERROR_OVERFLOW && len > outlen) {
 			DBG(DBG_io2, "overflow detected. len = %d > outlen = %d\n",
 				len, outlen);
 			/* Ignore underflows for now. FIXME. */
 		} else if (ret < 0)
-			goto usb_error;
+			goto chk_failed;
 		size -= outlen;
 		buf += outlen;
 		if (outlen < len)
 			break;
 	}
-
-	/* Do this or else the motor/gamma doesn't get written */
-	if (reset_addr) {
-		set_reg(dev, GL843_MTRTBL, 0);
-		set_reg(dev, GL843_GMMADDR, 0);
-		if (flush_regs(dev) < 0)
-			return -EIO;
-	}
 	return 0;
-usb_error:
+chk_failed:
 	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));
 	return -EIO;
 }
-
-/* Transfer a motor acceleration table to the scanner. */
-int send_motor_table(struct gl843_device *dev,
-		     int table, size_t len, uint16_t *a)
-{
-	uint16_t buf[len];
-	uint16_t *p;
-
-	if (table < 1 || table > 5)
-		return -EINVAL;
-
-	if (host_is_big_endian()) {
-		int i;
-		for (i = 0; i < len; i++) {
-			buf[i] = ((a[i] >> 8) & 0xff) | ((a[i] & 0xff) << 8);
-		}
-		p = buf;
-	} else {/* if (host_is_little_endian()) */
-		p = a;
-	}
-
-	DBG(DBG_io, "table = %d\n", table);
-
-	return xfer_bulk(dev, (uint8_t *) p,
-		len * sizeof(uint16_t), (table-1) * 2048, MOTOR_SRAM | BULK_OUT);
-}
-
 
 /*** Device register access functions. ***/
 
@@ -371,23 +376,18 @@ unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg)
 int flush_regs(struct gl843_device *dev)
 {
 	int i;
-	int ret;
 
 	for (i = dev->min_dirty; i <= dev->max_dirty; i++) {
 		if (dev->ioregs[i].dirty != 0) {
-			ret = write_ioreg(dev, i, dev->ioregs[i].val);
+			int ret = write_ioreg(dev, i, dev->ioregs[i].val);
 			if (ret < 0)
-				goto usb_error;
+				return ret;
 		}
 	}
 	dev->min_dirty = dev->max_ioreg + 1;
 	dev->max_dirty = 0;
 	return 0;
-usb_error:
-	/* Don't print an error message; write_ioreg() already did. */
-	return ret;
 }
-
 
 void mark_devreg_dirty(struct gl843_device *dev, enum gl843_reg reg)
 {
@@ -398,6 +398,12 @@ void mark_devreg_dirty(struct gl843_device *dev, enum gl843_reg reg)
 	for (; rmap->devreg == reg; ++rmap) {
 		mark_ioreg_dirty(dev, rmap->ioreg, 0xff);
 	}
+}
+
+int write_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val)
+{
+	set_reg(dev, reg, val);
+	return flush_regs(dev);
 }
 
 /* Read a set of device or IO registers from the scanner.
@@ -415,20 +421,10 @@ int read_regs(struct gl843_device *dev, ...)
 	int ret;
 	int reg = 0;
 	va_list ap;
+
 	va_start(ap, dev);
-
-	/* Find the IO registers we need to read, and mark them as dirty. */
+	/* Mark the listed registers as dirty. */
 	while ((reg = va_arg(ap, int)) >= 0) {
-#if 0
-		const struct regmap_ent *rmap;
-		if (reg > dev->max_devreg)
-			continue;
-		rmap = dev->regmap + dev->regmap_index[reg];
-
-		for (; rmap->devreg == reg; ++rmap) {
-			mark_ioreg_dirty(dev, rmap->ioreg, 0xff);
-		}
-#endif
 		mark_devreg_dirty(dev, reg);
 	}
 	va_end(ap);
@@ -460,20 +456,34 @@ int read_reg(struct gl843_device *dev, enum gl843_reg reg)
 		return ret;
 	return get_reg(dev, reg);
 }
-
+#if 0
+void diff_regs(struct gl843_device *dev)
+{
+	enum gl843_reg i;
+	int oldval, val;
+	for (i = GL843_MIN_IOREG; i <= GL843_MAX_IOREG; i++) {
+		oldval = dev->ioregs[i].val;
+		val = read_ioreg(dev, i);
+		if (val != oldval) {
+			printf("IOREG(0x%x): cached = %d, in scanner = %d\n",
+				i, oldval, val);
+		}
+	}
+}
+#endif
 /* Write a configuration register in the analog front end (the A/D-converter) */
 int write_afe(struct gl843_device *dev, int reg, int val)
 {
+	int ret;
 	int fe_busy = 1;
-	int timeout = 10;	/* 10 <==> 40 ms as one register read uses
-				 * 2 USB requests to and 2 responses, 1 ms each */
+	int timeout = 10;	/* Arbitrary choice */
 
 	DBG(DBG_io, "reg = 0x%x, value = 0x%x (%d)\n", reg, val, val);
 
 	while (fe_busy && timeout) {
-		if (read_regs(dev, GL843_FEBUSY, -1) < 0)
-			return -1; /* USB error. */
-		fe_busy = get_reg(dev, GL843_FEBUSY);
+		fe_busy = read_reg(dev, GL843_FEBUSY);
+		if (fe_busy)
+			goto chk_failed;
 		timeout--;
 	}
 	if (timeout == 0) {
@@ -482,10 +492,9 @@ int write_afe(struct gl843_device *dev, int reg, int val)
 		return -EBUSY;
 	}
 
-	set_reg(dev, GL843_FEWRA, reg);
-	set_reg(dev, GL843_FEWRDATA, val);
-	if (flush_regs(dev) < 0) {
-		return -EIO; /* USB error. */
-	}
+	CHK(write_reg(dev, GL843_FEWRA, reg));
+	CHK(write_reg(dev, GL843_FEWRDATA, val));
 	return 0;
+chk_failed:
+	return -EIO;
 }

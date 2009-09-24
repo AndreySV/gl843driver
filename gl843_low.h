@@ -37,30 +37,26 @@ struct gl843_device
 };
 
 /* xfer_bulk() and xfer_table() flags */
-#define BULK_IN		0
-#define BULK_OUT	1
-#define IMG_DRAM	0
-#define GAMMA_SRAM 	2
-#define MOTOR_SRAM	4
 
 /* Range checking of IO register addresses (for debugging) */
 #define IOREG(addr) chk_ioreg((addr), __func__, __LINE__)
 
 int chk_ioreg(int addr, const char *func, int line);
 void create_device(struct gl843_device *dev);
-int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val);
-int read_ioreg(struct gl843_device *dev, uint8_t ioreg);
 int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size,
 	int addr, int flags);
-int send_motor_table(struct gl843_device *dev, int table, size_t len,
-	uint16_t *a);
+int send_motor_table(struct gl843_device *dev, int table, size_t len, uint16_t *a);
+int send_gamma_table(struct gl843_device *dev, int table, size_t len, uint16_t *g);
+int send_shading(struct gl843_device *dev, uint8_t *buf, size_t size, int addr);
 
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val);
 void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len);
 unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg);
 int flush_regs(struct gl843_device *dev);
+int write_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val);
 int read_regs(struct gl843_device *dev, ...);
 int read_reg(struct gl843_device *dev, enum gl843_reg reg);
+//void diff_regs(struct gl843_device *dev);
 int write_afe(struct gl843_device *dev, int reg, int val);
 
 #endif /* _GL843_LOW_H_ */

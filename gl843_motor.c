@@ -247,6 +247,10 @@ int setup_scanning_profile(struct gl843_device *dev,
 	/* "scan" refers to table 2 */
 	z1mod = (scan.t_max + scan.a[scan.alen - 1] * fwdstep) % exposure;
 
+	// TEST
+	z1mod = 0;
+	z2mod = 0;
+
 	set_reg(dev, GL843_Z1MOD, z1mod);
 	set_reg(dev, GL843_Z2MOD, z2mod);
 

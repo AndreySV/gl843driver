@@ -27,6 +27,13 @@
 /* Make v evenly divisible by 2^STEPTIM by rounding down */
 #define STEPTIM_ALIGN_DN(v) ALIGN_DN((v), 1 << STEPTIM)
 
+#define CHK(x)					\
+	do {					\
+		ret = (x);			\
+		if (ret < 0)			\
+			goto chk_failed;	\
+	} while (0)
+
 #define DBG_error0      0	/* unfilterable messages */
 #define DBG_error       1	/* fatal errors */
 #define DBG_init        2	/* initialization and scanning time messages */
@@ -42,7 +49,6 @@
 
 #define DBG_LN(level, msg, ...)	\
 	vprintf_dbg(level, __func__, __LINE__, msg, ##__VA_ARGS__)
-
 
 void vprintf_dbg(int level, const char *func, int line, const char *msg, ...)
 	__attribute__ ((format (printf, 4, 5)));
@@ -63,6 +69,7 @@ double get_timer(struct dbg_timer *timer);
 int native_endianness(void);
 int __attribute__ ((pure)) host_is_big_endian(void);
 int __attribute__ ((pure)) host_is_little_endian(void);
+void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len);
 
 const char *sanei_libusb_strerror(int errcode);
 

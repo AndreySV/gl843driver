@@ -21,13 +21,13 @@ void set_lamp(struct gl843_device *dev, enum gl843_lamp state, int timeout)
 		/* 0x03 */
 		{ GL843_LAMPDOG, (timeout != 0) ? 1 : 0 },
 		{ GL843_XPASEL, (state == LAMP_TA) ? 1 : 0 },
-		{ GL843_LAMPPWR,(state != LAMP_OFF) ? 1 : 0 },
+		{ GL843_LAMPPWR, (state != LAMP_OFF) ? 1 : 0 },
 		{ GL843_LAMPTIM, timeout },
 
 		{ GL843_MTLLAMP, 0 },	/* 0x05: timeout = LAMPTIM * 2^MTLLAMP */
 		{ GL843_LPWMEN, 0 },	/* 0x0A: 0 = Disable lamp PWM */
 		{ GL843_ONDUR, 159 },	/* 0x98,0x99 */
-		{ GL843_OFFDUR, 175  },	/* 0x9A,0x9B */
+		{ GL843_OFFDUR, 175 },	/* 0x9A,0x9B */
 	};
 	set_regs(dev, lamp, ARRAY_SIZE(lamp));
 }
@@ -122,7 +122,7 @@ void set_frontend(struct gl843_device *dev,
 	int vsmp = 11;
 	int rhi = 11, rlow = 13, ghi = 0, glow = 3, bhi = 6, blow = 9;
 
-	int deep_color, monochrome;
+	int deep_color, monochrome, use_gamma;
 	int strpixel, endpixel, maxwd;
 
 	/* afe_dpi = resolution seen by the A/D converter,
@@ -141,8 +141,8 @@ void set_frontend(struct gl843_device *dev,
 		cph = 1; cpl = 3; rsh = 0; rsl = 2;
 
 		vsmp = 11;
-		//rhi = 10; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 8;
-		rhi = 0; rlow = 0; ghi = 0; glow = 0; bhi = 0; blow = 0;
+		rhi = 10; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 8;
+		//rhi = 0; rlow = 0; ghi = 0; glow = 0; bhi = 0; blow = 0;
 
 	} else if (afe_dpi == 2400) {
 
@@ -182,44 +182,47 @@ void set_frontend(struct gl843_device *dev,
 	switch (fmt) {
 	case PXFMT_LINEART:	/* 1 bit per pixel, black and white */
 	 	maxwd = ALIGN(width, 8) >> 3;
-		deep_color = 0;
-		monochrome = 1;
 		scanmod = 0;
 		break;
 	case PXFMT_GRAY8:	/* 8 bits per pixel, grayscale */
 		maxwd = width;
-		deep_color = 0;
-		monochrome = 1;
 		scanmod = 0;
 		break;
 	case PXFMT_GRAY16:	/* 16 bits per pixel, grayscale */
-		maxwd = 2 * width;
-		deep_color = 1;
-		monochrome = 1;
+		maxwd = width;
 		scanmod = 7;
 		break;
 	case PXFMT_RGB8:	/* 24 bits per pixel, RGB color */
 		maxwd = 3 * width;
-		deep_color = 0;
-		monochrome = 0;
-		scanmod = 0;
+		scanmod = 7;
 		break;
 	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
 		maxwd = 6 * width;
-		deep_color = 1;
-		monochrome = 0;
 		scanmod = 7;
 		break;
 	}
 
-	maxwd = ((ALIGN(fmt * width, 8) >> 3) * dpi) / afe_dpi;
+	monochrome = (fmt != PXFMT_RGB8 && fmt != PXFMT_RGB16);
+	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
+	use_gamma = (fmt != PXFMT_GRAY16 && fmt != PXFMT_RGB16);
 
-	DBG(DBG_info, "maxwd = %d, dpi = %d\n", maxwd, dpi);
+ // TEST
+	//maxwd = 3976;
+	monochrome = 0;
+	deep_color = 0;
+	use_gamma = 0;
+	scanmod = 7;
+
+	//maxwd = ((ALIGN(fmt * width, 8) >> 3) * dpi) / afe_dpi;
+
+	DBG(DBG_info, "maxwd = %d, monochrome = %d, deep_color = %d, "
+		"use_gamma = %d, dpi = %d\n", maxwd, monochrome, deep_color,
+		use_gamma, dpi);
 
 	/* CCD/CIS and AFE settings */
 	struct regset_ent frontend[] = {
 		/* 0x04 */
-		{ GL843_BITSET, deep_color },	/* 8-bit/16-bit data */
+		{ GL843_BITSET, deep_color },
 		{ GL843_FILTER, 0 },		/* 0 = color (1,2,3 = R,G,B) */
 		/* 0x06 */
 		{ GL843_SCANMOD, scanmod },	/* 0 = 12 clocks/pixel (24bit mode) */
@@ -274,7 +277,6 @@ void set_frontend(struct gl843_device *dev,
 	int bwlo = 128, bwhi = 128; /* TODO: Read thresholds from img struct */
 
 	struct regset_ent format[] = {
-
 		/* 0x2C,0x2D,0x30,0x31,0x32,0x33 */
 		{ GL843_DPISET, dpi },
 		{ GL843_STRPIXEL, strpixel },
@@ -291,10 +293,21 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_TRUEB, (int) (0.1140 * 255) },
 
 		/* 0x04 */
-		{ GL843_LINEART, fmt == PXFMT_LINEART ? 1 : 0 },
+		{ GL843_LINEART, fmt == PXFMT_LINEART },
 		/* 0x2E,0x2F */
 		{ GL843_BWHI, bwhi },
 		{ GL843_BWLOW, bwlo },
+
+		/* 0x05 */
+		{ GL843_GMMENB, use_gamma },
+		/* 0x08 */
+		{ GL843_DECFLAG, 0 },
+		{ GL843_GMMFFR, 0 },
+		{ GL843_GMMFFG, 0 },
+		{ GL843_GMMFFB, 0 },
+		{ GL843_GMMZR, 0 },
+		{ GL843_GMMZG, 0 },
+		{ GL843_GMMZB, 0 },
 	};
 	set_regs(dev, format, ARRAY_SIZE(format));
 	flush_regs(dev);
@@ -302,7 +315,7 @@ void set_frontend(struct gl843_device *dev,
 
 void set_postprocessing(struct gl843_device *dev)
 {
-	int dvdset = 0, shdarea = 0, aveenb = 1, gmmenb = 0, decflag = 0;
+	int dvdset = 0, shdarea = 0, aveenb = 0;
 	/* Postprocessing encompasses all pixel processing between
 	 * the analog front end (AFE) and USB interface */
 	struct regset_ent postprocessing[] = {
@@ -313,39 +326,25 @@ void set_postprocessing(struct gl843_device *dev)
 		{ GL843_SHDAREA, shdarea },
 		/* 0x03 */
 		{ GL843_AVEENB, aveenb }, 	/* X scaling: 1=avg, 0=del */
-		/* 0x05 */
-		{ GL843_GMMENB, gmmenb },
 		/* 0x06 */
 		{ GL843_GAIN4, 0 },		/* 0/1: shading gain of 4/8. */
-		/* 0x08 */
-		{ GL843_DECFLAG, decflag },
-		{ GL843_GMMFFR, 0 },
-		{ GL843_GMMFFG, 0 },
-		{ GL843_GMMFFB, 0 },
-		{ GL843_GMMZR, 0 },
-		{ GL843_GMMZG, 0 },
-		{ GL843_GMMZB, 0 },
 	};
 	set_regs(dev, postprocessing, ARRAY_SIZE(postprocessing));
 	flush_regs(dev);
 }
 
-#define CHK(x)					\
-	do {					\
-		if ((x) < 0)			\
-			goto chk_failed;	\
-	} while (0)
-
 int init_afe(struct gl843_device *dev)
 {
+	int ret;
 	/* Reset AFE */
 
-	CHK(write_afe(dev, 4, 0));
+	//CHK(write_afe(dev, 4, 0));
 
 	/* MODE4 = 0
 	 * PGAFS = 2: full scale output (negative),
 	 * MONO = 0: colour mode,
-	 * CDS = 1: Enable correlated double sampling (CDS) mode, EN = 1
+	 * CDS = 1: Enable correlated double sampling (CDS) mode,
+	 * EN = 1: Power on
 	 */
 	CHK(write_afe(dev, 1, 0x23));
 
@@ -356,14 +355,14 @@ int init_afe(struct gl843_device *dev)
 	 * MUXOP = 0: 16-bit parallel output
 	 */
 	CHK(write_afe(dev, 2, 0x24));
-	CHK(write_afe(dev, 3, 0x1f)); /* Default. Can be 0x2f */
+	CHK(write_afe(dev, 3, 0x1f)); /* Can be 0x1f or 0x2f */
 
-	CHK(write_afe(dev, 6, 0));
-	CHK(write_afe(dev, 8, 0));
-	CHK(write_afe(dev, 9, 0));
+//	CHK(write_afe(dev, 6, 0));
+//	CHK(write_afe(dev, 8, 0));
+//	CHK(write_afe(dev, 9, 0));
 
 	/* Default RGB offsets for Canoscan 4400F */
-
+#if 0
 	CHK(write_afe(dev, 32, 96));
 	CHK(write_afe(dev, 33, 96));
 	CHK(write_afe(dev, 34, 96));
@@ -373,6 +372,14 @@ int init_afe(struct gl843_device *dev)
 	CHK(write_afe(dev, 40, 75));
 	CHK(write_afe(dev, 41, 75));
 	CHK(write_afe(dev, 42, 75));
+#endif
+	CHK(write_afe(dev, 32, 112));
+	CHK(write_afe(dev, 40, 216));
+	CHK(write_afe(dev, 33, 106));
+	CHK(write_afe(dev, 41, 213));
+	CHK(write_afe(dev, 34, 98));
+	CHK(write_afe(dev, 42, 203));
+
 
 	return 0;
 chk_failed:
@@ -382,6 +389,22 @@ chk_failed:
 
 void setup_scanner(struct gl843_device *dev)
 {
+	/* SDRAM */
+
+	struct regset_ent sdram[] = {
+		/* 0x0B */
+		{ GL843_CLKSET, SYSCLK_60_MHZ },
+		{ GL843_ENBDRAM, 1 },	/* posedge => SDRAM power-on sequence */
+		{ GL843_RFHDIS, 0 },	/* 0 = use auto-refresh */
+		{ GL843_DRAMSEL, 1 },	/* 1 = 16Mbit */
+		/* 0x9D */
+		{ GL843_RAMDLY,  0 },	/* SCLK delay */
+		/* 0xA2 */
+		{ GL843_RFHSET, 31 },  /* refresh time [2µs] */
+	};
+	set_regs(dev, sdram, ARRAY_SIZE(sdram));
+	flush_regs(dev);
+
 	struct regset_ent gpio1[] = {
 
 		/* CCD/CIS/ADF */
@@ -406,14 +429,17 @@ void setup_scanner(struct gl843_device *dev)
 	set_regs(dev, gpio1, ARRAY_SIZE(gpio1));
 	flush_regs(dev);
 
-	write_ioreg(dev, 0xa8, 0);	/* GPOE27-25 inputs, GPIO27-25 = 0 */
-	write_ioreg(dev, 0xa7, 0xff);	/* GPOE24-17 are outputs */
-	write_ioreg(dev, 0xa6, 0);	/* GPIO24-17 */
-	write_ioreg(dev, 0x6e, 0xff);	/* GPOE16-9 are outputs */
-	write_ioreg(dev, 0x6c, 1);	/* GPIO16-9 */
-	write_ioreg(dev, 0x6f, 0);	/* GPOE8-1 are inputs */
-	write_ioreg(dev, 0x6d, 0);	/* GPIO8-1 */
+	write_reg(dev, IOREG(0x6e), 0xff);	/* GPOE16-9 are outputs */
+	write_reg(dev, IOREG(0x6c), 1);		/* GPIO16-9 */
+	write_reg(dev, IOREG(0x6f), 0);		/* GPOE8-1 are inputs */
+	write_reg(dev, IOREG(0x6d), 0);		/* GPIO8-1 */
+	write_reg(dev, IOREG(0xa7), 0xff);	/* GPOE24-17 are outputs */
+	write_reg(dev, IOREG(0xa6), 0);		/* GPIO24-17 */
+	write_reg(dev, IOREG(0xa8), 0);		/* GPOE27-25 in, GPIO27-25 = 0 */
 
+	set_reg(dev, GL843_GPOE16, 0);
+	set_reg(dev, GL843_GPOE14, 0);
+	flush_regs(dev);
 
 	struct regset_ent static_setup[] = {
 
@@ -473,8 +499,6 @@ void setup_scanner(struct gl843_device *dev)
 
 		/* 0x34 */
 		{ GL843_DUMMY, 20 },
-		/* 0x58 */
-		{ GL843_VSMPW, 3 },	/* Sampling pulse width */
 		/* 0x59 */
 		{ GL843_BSMP, 0 },
 		{ GL843_BSMPW, 0 },
@@ -506,18 +530,7 @@ void setup_scanner(struct gl843_device *dev)
 		/* 0x9E */
 		{ GL843_SEL3INV, 0 },
 		/* 0xAD */
-		{ GL843_CCDTYP, 0 },	/*  */
-
-		/* SDRAM */
-
-		/* 0x0B */
-		{ GL843_ENBDRAM, 1 },	/* posedge => SDRAM power-on sequence */
-		{ GL843_RFHDIS, 0 },	/* 0 = use auto-refresh */
-		{ GL843_DRAMSEL, 1 },	/* 1 = 16Mbit */
-		/* 0x9D */
-		{ GL843_RAMDLY,  0 },	/* SCLK delay */
-		/* 0xA2 */
-		{ GL843_RFHSET, 31 },  /* refresh time [2µs] */
+		{ GL843_CCDTYP, 0 },	/* 0,4,5 ??? */
 
 		/* Misc */
 
@@ -582,7 +595,7 @@ void setup_scanner(struct gl843_device *dev)
 	};
 	set_regs(dev, static_setup, ARRAY_SIZE(static_setup));
 
-	set_sysclk(dev, SYSCLK_48_MHZ);
+//	set_sysclk(dev, SYSCLK_60_MHZ);
 	set_lamp(dev, LAMP_OFF, 0);
 	flush_regs(dev);
 
@@ -688,15 +701,15 @@ void cs4400f_build_motor_table(struct gl843_motor_setting *m,
 		}
 
 		if (speed <= 700)
-			build_motor_table(m, step, 4500, speed, 0);
+			build_motor_table(m, step, 4500, speed, 5);
 		else if (speed <= 1000)
-			build_motor_table(m, step, 8000, speed, 0);
+			build_motor_table(m, step, 8000, speed, 5);
 		else if (speed <= 3500)
-			build_motor_table(m, step, 15000, speed, 0);
+			build_motor_table(m, step, 15000, speed, 5);
 		else if (speed <= 10000)
-			build_motor_table(m, step, 33000, speed, 0);
+			build_motor_table(m, step, 33000, speed, 5);
 		else
-			build_motor_table(m, step, 65535, speed, 0);
+			build_motor_table(m, step, 65535, speed, 5);
 		break;
 
 	case QUARTER_STEP:
