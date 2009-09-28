@@ -19,7 +19,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
-//#include <signal.h>
+#include <signal.h>
 #include <errno.h>
 #include <libusb-1.0/libusb.h>
 #include <math.h>
@@ -55,24 +55,6 @@ void destroy_image(struct gl843_image *img)
 	free(img->data);
 	img->data = NULL;
 	img->len = 0;
-}
-
-/* read_image_data - Read available image data from the scanner. */
-int read_image_data(struct gl843_device *dev,
-		    struct gl843_image *img,
-		    int linecnt)
-{
-	int ret, n;
-	n = linecnt * img->stride;
-
-	img->data = realloc(img->data, img->len + n);
-	ret = recv_image(dev, img->data + img->len, n, 0);
-	if (ret < 0)
-		return ret;
-	img->len += n;
-	img->height += linecnt;
-
-	return 0;
 }
 
 void send_simple_gamma(struct gl843_device *dev, float gamma)
@@ -112,7 +94,7 @@ void write_image(const char *fname, struct gl843_image *img)
 		fprintf(file, "P5\n%d %d\n65535\n", img->width, img->height);
 		break;
 	case PXFMT_RGB8:
-		fprintf(file, "P6\n%d %d\n255\n", img->width, img->height);
+		fprintf(file, "P6\n%d %d\n255\n", img->width-8, img->height);
 		break;
 	case PXFMT_RGB16:
 		fprintf(file, "P6\n%d %d\n65535\n", img->width, img->height);
@@ -176,19 +158,45 @@ usb_error:
 	return NULL;
 }
 
+/* read_image_data - Read available image data from the scanner. */
+int read_image_data(struct gl843_device *dev,
+		    struct gl843_image *img,
+		    int linecnt)
+{
+	int ret, n, m;
+	n = linecnt * img->stride;
+
+	img->data = realloc(img->data, img->len + n);
+	ret = recv_image(dev, img->data + img->len, n, 0);
+	if (ret < 0)
+		return ret;
+	img->len += n;
+	img->height += linecnt;
+
+	return 0;
+}
+
+struct gl843_image img;
 int init_afe(struct gl843_device *dev);
 void set_postprocessing(struct gl843_device *dev);
 void mark_devreg_dirty(struct gl843_device *dev, enum gl843_reg reg);
+
+void sigint_handler(int sig)
+{
+	write_image("test.pnm", &img);
+	exit(0);
+}
 
 int main()
 {
 	libusb_context *ctx;
 	struct gl843_device dev;
-	struct gl843_image img;
 
-	enum gl843_pixformat fmt = PXFMT_RGB8;
+	enum gl843_pixformat fmt = PXFMT_RGB16;
 
 	int ret, moving;
+
+	signal(SIGINT, sigint_handler);
 
 	init_debug("GL843", -1);
 	ctx = open_scanner(&dev, 0x04a9, 0x2228);
@@ -196,63 +204,46 @@ int main()
 	if (ctx == NULL)
 		return 1;
 
-	create_image(&img, fmt, 2552);
+	write_reg(&dev, GL843_SCANRESET, 1);
+	write_reg(&dev, GL843_SCANRESET, 0);
 
-	set_reg(&dev, GL843_SCANRESET, 1);
-	flush_regs(&dev);
-	set_reg(&dev, GL843_SCANRESET, 0);
-	flush_regs(&dev);
+	usleep(100000);
 
 	while(!read_reg(&dev, GL843_HOMESNR))
 		usleep(10000);
 
 	setup_scanner(&dev);
-	//sdram_test(&dev);
-
-	//exit(0);
-
 	init_afe(&dev);
 	send_simple_gamma(&dev, 1.0);
 
+	int width = 2552;
+	int height = 2400;
+	int dpi = 1200;
+
+	create_image(&img, fmt, width);
 	set_frontend(&dev,
 			/* fmt */ fmt,
-			/* width */ 10208,
+			/* width */ width * 4800 / dpi,
 			/* start_x */ 128,
-			/* dpi */ 1200,
-			/* afe_dpi */ 1200,
+			/* dpi */ dpi,
+			/* afe_dpi */ dpi,
 			/* linesel */ 0,
 		  	/* tgtime */ 0,
 			/* lperiod */ 11640,
 			/* expr,g,b */ 40000, 40000, 40000);
 
-	//signal(SIGINT, sigint_handler);
-
-/*	moving = 1;
-	while (moving) {
-		moving = read_regs(&dev, GL843_MOTORENB, -1);
-		if (moving == -EIO)
-			break;
-		usleep(10000);
-	}*/
-	set_reg(&dev, GL843_CLRMCNT, 1);	/* Clear FEDCNT */
-	set_reg(&dev, GL843_CLRLNCNT, 1);	/* Clear SCANCNT */
-	flush_regs(&dev);
-	set_reg(&dev, GL843_CLRMCNT, 0);
-	set_reg(&dev, GL843_CLRLNCNT, 0);
-	flush_regs(&dev);
-	usleep(100000);
-
+	//set_lamp(&dev, LAMP_OFF, 0);
 	set_lamp(&dev, LAMP_PLATEN, 1);		/* Turn on lamp */
 	set_postprocessing(&dev);
 	flush_regs(&dev);
 
 	setup_scanning_profile(&dev,
-			   2.0 /* y_start */,
+			   0.5 /* y_start */,
 			   //1.0625 /* y_end */,
-			   2.05,
+			   height,
 			   600 /* y_dpi */,
 			   HALF_STEP /* type */,
-			   0 /* fwdstep 0 = disable */,
+			   200 /* fwdstep 0 = disable */,
 			   11640 /* exposure */);
 
 	set_reg(&dev, GL843_CLRMCNT, 0);
@@ -263,63 +254,47 @@ int main()
 	set_reg(&dev, GL843_MTRPWR, 1);
 	set_reg(&dev, GL843_OPTEST,0);
 	flush_regs(&dev);
-#if 0
-	diff_regs(&dev);
 
-	set_reg(&dev, GL843_MTRPWR, 0);
+	set_reg(&dev, GL843_CLRMCNT, 1);	/* Clear FEDCNT */
+	set_reg(&dev, GL843_CLRLNCNT, 1);	/* Clear SCANCNT */
 	flush_regs(&dev);
-	libusb_close(dev.libusb_handle);
-	return 0;
-#endif
-
-	set_reg(&dev, GL843_SCAN, 1);
-	flush_regs(&dev);
-	set_reg(&dev, GL843_MOVE, 255);
+	set_reg(&dev, GL843_CLRMCNT, 0);
+	set_reg(&dev, GL843_CLRLNCNT, 0);
 	flush_regs(&dev);
 
-	int done;
-	int vword;
-	int n = 0;
+	//write_reg(&dev, GL843_BUFSEL, 16); /* Is ignored by the scanner. (?)*/
+	write_reg(&dev, GL843_SCAN, 1);
+	write_reg(&dev, GL843_MOVE, 255);
 
-	while (!read_reg(&dev, GL843_SCANFSH)) {
-/*		printf("%d\n", read_reg(&dev, IOREG(0x40)));
-		if (read_reg(&dev, GL843_VALIDWORD) > 2000) {
-			usleep(100000);
-			ret = read_image_data(&dev, &img, 1);
-			//if (ret < 0)
-			//	return 1;
-			n++;
+	//TODO: Read data quickly and reliably
+
+	
+
+	do {
+		int vword, linecnt;
+
+		vword = read_reg(&dev, GL843_VALIDWORD);
+		linecnt = (vword & ~255) * 2 / img.width;
+
+		if (linecnt > 0) {
+			read_image_data(&dev, &img, linecnt);
+		} else {
+			usleep(1000);
 		}
-*/	}
-	printf("scancnt = %d\n", read_reg(&dev, GL843_SCANCNT));
-	printf("validword = %d\n", read_reg(&dev, GL843_VALIDWORD));
+	
+	} while(!read_reg(&dev, GL843_SCANFSH));
 
-//	while (!read_reg(&dev, GL843_BUFEMPTY)) {
-		ret = read_image_data(&dev, &img, 120);
-		//if (ret < 0)
-		//	return 1;
-//	}
-#if 0
-	uint8_t outbuf[1024*1024*1];
-	xfer_bulk(&dev, outbuf, 1024*1024, 0, BULK_IN | IMG_DRAM);
-	int i;
-	for (i = 0; i < 1024*1024; i++)
-		printf("%x ", outbuf[i]);
-	printf("\n");
-#endif
+//	while (!read_reg(&dev, GL843_FEEDFSH));
+//	while (!read_reg(&dev, GL843_BUFEMPTY));
+//	ret = read_image_data(&dev, &img, height);
 
 	write_image("test.pnm", &img);
 
+	destroy_image(&img);
+
 	while(!read_reg(&dev, GL843_HOMESNR))
 		usleep(10000);
-
-	set_reg(&dev, GL843_MTRPWR, 0);
-	flush_regs(&dev);
-
-	destroy_image(&img);
-	set_lamp(&dev, LAMP_OFF, 0);
-	set_reg(&dev, GL843_MTRPWR, 0);
-	flush_regs(&dev);
+	write_reg(&dev, GL843_MTRPWR, 0);
 	libusb_close(dev.libusb_handle);
 	return 0;
 

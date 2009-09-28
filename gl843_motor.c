@@ -128,7 +128,7 @@ void cs4400f_get_fast_feed_motor_table(struct gl843_motor_setting *m);
  */
 int setup_scanning_profile(struct gl843_device *dev,
 			   float y_start,
-			   float y_end,
+			   unsigned int lincnt,
 			   int y_dpi,
 			   enum motor_step type,
 			   int fwdstep,
@@ -142,14 +142,14 @@ int setup_scanning_profile(struct gl843_device *dev,
 	float Rms;	/* Km/Ks ratio */
 
 	unsigned int speed;
-	int scanfeed, feedl, lincnt;
+	int scanfeed, feedl;
 	unsigned int z1mod, z2mod;
 
 	speed = exposure * y_dpi / (dev->base_ydpi << type);
 
-	DBG(DBG_info, "y_start = %f, y_end = %f, type = %d, speed = %u, "
+	DBG(DBG_info, "y_start = %f, lincnt = %d, type = %d, speed = %u, "
 		"fwdstep = %d, exposure = %u\n",
-		y_start, y_end, type, speed, fwdstep, exposure);
+		y_start, lincnt, type, speed, fwdstep, exposure);
 
 	/*
 	 * Set up motor acceleration
@@ -217,7 +217,11 @@ int setup_scanning_profile(struct gl843_device *dev,
 		set_reg(dev, GL843_FEEDL, feedl);
 	}
 
-	lincnt = ((int) (Ks * (y_end - y_start) + 0.5));
+	//lincnt = ((int) (Ks * (y_end - y_start) + 0.5));
+
+	// TEST
+	//lincnt = 312;
+
 	if (lincnt < 1) {
 		DBG(DBG_warn, "Start and end positions are the same.\n");
 		lincnt = 1;
@@ -246,10 +250,6 @@ int setup_scanning_profile(struct gl843_device *dev,
 	z2mod = (scan.t_max + scan.a[scan.alen - 1] * scanfeed) % exposure;
 	/* "scan" refers to table 2 */
 	z1mod = (scan.t_max + scan.a[scan.alen - 1] * fwdstep) % exposure;
-
-	// TEST
-	z1mod = 0;
-	z2mod = 0;
 
 	set_reg(dev, GL843_Z1MOD, z1mod);
 	set_reg(dev, GL843_Z2MOD, z2mod);

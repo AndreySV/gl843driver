@@ -35,7 +35,7 @@ void build_motor_table(struct gl843_motor_setting *m,
 
 int setup_scanning_profile(struct gl843_device *dev,
 			   float y_start,
-			   float y_end,
+			   unsigned int lincnt,
 			   int y_dpi,
 			   enum motor_step type,
 			   int fwdstep,

@@ -178,7 +178,7 @@ chk_failed:
 
 /* Transfer a motor acceleration table or gamma table to the scanner. */
 static int send_table(struct gl843_device *dev, int table,
-		uint16_t *tbl, size_t len, int is_motortbl)
+		      uint16_t *tbl, size_t len, int is_motortbl)
 {
 	int i, ret, addr;
 	uint8_t *p, *buf;
@@ -267,11 +267,12 @@ int recv_image(struct gl843_device *dev, uint8_t *buf, size_t size, int addr)
 	int total = 0;
 	while (size > 0) {
 		int outlen = 0;
+		//len = size < 16384 ?: 16384;
 		len = size;
 		DBG(DBG_io2, "receiving %d bytes ...\n", len);
 		ret = usb_bulk_xfer(h, 0x81, buf, len, &outlen, to);
 		total += outlen;
-		DBG(DBG_io2, "%d bytes actually received. (%d total)\n",
+		DBG(DBG_io, "%d bytes actually received. (%d total)\n",
 			outlen, total);
 		if (ret == LIBUSB_ERROR_OVERFLOW && len > outlen) {
 			DBG(DBG_io2, "overflow detected. len = %d > outlen = %d\n",

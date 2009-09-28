@@ -48,6 +48,7 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size,
 int send_motor_table(struct gl843_device *dev, int table, size_t len, uint16_t *a);
 int send_gamma_table(struct gl843_device *dev, int table, size_t len, uint16_t *g);
 int send_shading(struct gl843_device *dev, uint8_t *buf, size_t size, int addr);
+int recv_image(struct gl843_device *dev, uint8_t *buf, size_t size, int addr);
 
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val);
 void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len);

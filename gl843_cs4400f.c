@@ -206,11 +206,7 @@ void set_frontend(struct gl843_device *dev,
 	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
 	use_gamma = (fmt != PXFMT_GRAY16 && fmt != PXFMT_RGB16);
 
- // TEST
-	//maxwd = 3976;
-	monochrome = 0;
-	deep_color = 0;
-	use_gamma = 0;
+	 // TEST
 	scanmod = 7;
 
 	//maxwd = ((ALIGN(fmt * width, 8) >> 3) * dpi) / afe_dpi;
@@ -270,6 +266,17 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_CK1MAP, ck1map },
 		{ GL843_CK3MAP, ck3map },
 		{ GL843_CK4MAP, ck4map },
+		/* 0x09 */
+		{ GL843_BLINE1ST, 1 },	/* First CCD line is blue */
+
+		/* 0xA0: /* R-to-G-to-B line displacement */
+#if 0
+		/* We can't use this feature with the Canoscan 4400F as
+		 * there's barely enough image buffer RAM installed.
+		 * Trying results in frequent buffer overruns.
+		 */
+		{ GL843_LNOFSET, 24 },
+#endif
 	};
 	set_regs(dev, frontend, ARRAY_SIZE(frontend));
 	flush_regs(dev);
@@ -355,7 +362,7 @@ int init_afe(struct gl843_device *dev)
 	 * MUXOP = 0: 16-bit parallel output
 	 */
 	CHK(write_afe(dev, 2, 0x24));
-	CHK(write_afe(dev, 3, 0x1f)); /* Can be 0x1f or 0x2f */
+	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
 
 //	CHK(write_afe(dev, 6, 0));
 //	CHK(write_afe(dev, 8, 0));
@@ -372,14 +379,15 @@ int init_afe(struct gl843_device *dev)
 	CHK(write_afe(dev, 40, 75));
 	CHK(write_afe(dev, 41, 75));
 	CHK(write_afe(dev, 42, 75));
-#endif
+#else
 	CHK(write_afe(dev, 32, 112));
-	CHK(write_afe(dev, 40, 216));
-	CHK(write_afe(dev, 33, 106));
-	CHK(write_afe(dev, 41, 213));
-	CHK(write_afe(dev, 34, 98));
-	CHK(write_afe(dev, 42, 203));
+	CHK(write_afe(dev, 33, 112));
+	CHK(write_afe(dev, 34, 112));
 
+	CHK(write_afe(dev, 40, 216));
+	CHK(write_afe(dev, 41, 216));
+	CHK(write_afe(dev, 42, 216));
+#endif
 
 	return 0;
 chk_failed:
@@ -456,7 +464,6 @@ void setup_scanner(struct gl843_device *dev)
 		{ GL843_MTLBASE, 0 },	/* CCD pixel CLK = system pixel CLK */
 		/* 0x09 */
 		{ GL843_EVEN1ST, 0 },	/* 0 = First line of stagger CCD is odd */
-		{ GL843_BLINE1ST, 0 },	/* 0 = First CCD line is red */
 		{ GL843_SHORTTG, 0 },	/* 1 = Short SH(TG) period */
 		/* 0x16 */
 		{ GL843_CTRLHI, 0 },
@@ -867,7 +874,6 @@ one can be sure that no registers are ever undefined.
 0x9C: GL843_LCMWD,
 0x9F: GL843_LCDCTL, GL843_LCMCTL, GL843_EPROMCTL, GL843_TGCTL,
       GL843_MPUCTL, GL843_MOTMPU, GL843_NEC8884, GL843_DPI9600,
-0xA0: GL843_LNOFSET,
 0xA1: GL843_STGSET,
 
 0xA6: GPIO24-17
