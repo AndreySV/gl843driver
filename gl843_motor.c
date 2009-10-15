@@ -164,7 +164,7 @@ int setup_scanning_profile(struct gl843_device *dev,
 		/* Misc */
 		{ GL843_STEPTIM, STEPTIM },
 		{ GL843_MULSTOP, 0 },
-		{ GL843_STOPTIM, 15 }, /* or 15. TODO: When? */
+		{ GL843_STOPTIM, 15 }, /* or 31. TODO: When? */
 		/* Scanning (table 1 and 3)*/
 		{ GL843_STEPSEL, scan.type },
 		{ GL843_STEPNO, scan.alen >> STEPTIM },

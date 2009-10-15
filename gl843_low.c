@@ -161,8 +161,8 @@ static int write_bulk_setup(struct gl843_device *dev,
 
 	setup[0] = dir; /* dir = BULK_IN or BULK_OUT */
 	setup[1] = 0;	/* RAM */
-	setup[2] = VAL_BUF & 0xff;
-	setup[3] = (VAL_BUF >> 8) & 0xff;
+	setup[2] = 0x82; /* VAL_BUF */
+	setup[3] = 0;
 	setup[4] = size & 0xff;
 	setup[5] = (size >> 8) & 0xff;
 	setup[6] = (size >> 16) & 0xff;
@@ -267,13 +267,11 @@ int recv_image(struct gl843_device *dev, uint8_t *buf, size_t size, int addr)
 	int total = 0;
 	while (size > 0) {
 		int outlen = 0;
-		//len = size < 16384 ?: 16384;
-		len = size;
-		DBG(DBG_io2, "receiving %d bytes ...\n", len);
+		len = size < 16384 ? size : 16384;
 		ret = usb_bulk_xfer(h, 0x81, buf, len, &outlen, to);
 		total += outlen;
-		DBG(DBG_io, "%d bytes actually received. (%d total)\n",
-			outlen, total);
+		DBG(DBG_io, "requested %d, received %d bytes. (%d total)\n",
+			len, outlen, total);
 		if (ret == LIBUSB_ERROR_OVERFLOW && len > outlen) {
 			DBG(DBG_io2, "overflow detected. len = %d > outlen = %d\n",
 				len, outlen);
@@ -483,7 +481,7 @@ int write_afe(struct gl843_device *dev, int reg, int val)
 
 	while (fe_busy && timeout) {
 		fe_busy = read_reg(dev, GL843_FEBUSY);
-		if (fe_busy)
+		if (fe_busy < 0)
 			goto chk_failed;
 		timeout--;
 	}

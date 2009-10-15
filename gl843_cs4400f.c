@@ -197,7 +197,7 @@ void set_frontend(struct gl843_device *dev,
 		scanmod = 7;
 		break;
 	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
-		maxwd = 6 * width;
+		maxwd = 6 * width / 6;
 		scanmod = 7;
 		break;
 	}

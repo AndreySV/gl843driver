@@ -40,14 +40,14 @@ struct gl843_image
 	size_t len;
 };
 
-void create_image(struct gl843_image *img, enum gl843_pixformat fmt, int width)
+void create_image(struct gl843_image *img, enum gl843_pixformat fmt, int width, int height)
 {
 	img->bpp = fmt;	/* fmt is enumerated as bits per pixel */
 	img->width = width;
 	img->stride = ALIGN(img->bpp * img->width, 8) / 8;
-	img->height = 0;
-	img->data = NULL;
-	img->len = 0;
+	img->height = height;
+	img->len = img->stride * img->height;
+	img->data = malloc(img->len);
 }
 
 void destroy_image(struct gl843_image *img)
@@ -158,24 +158,6 @@ usb_error:
 	return NULL;
 }
 
-/* read_image_data - Read available image data from the scanner. */
-int read_image_data(struct gl843_device *dev,
-		    struct gl843_image *img,
-		    int linecnt)
-{
-	int ret, n, m;
-	n = linecnt * img->stride;
-
-	img->data = realloc(img->data, img->len + n);
-	ret = recv_image(dev, img->data + img->len, n, 0);
-	if (ret < 0)
-		return ret;
-	img->len += n;
-	img->height += linecnt;
-
-	return 0;
-}
-
 struct gl843_image img;
 int init_afe(struct gl843_device *dev);
 void set_postprocessing(struct gl843_device *dev);
@@ -220,7 +202,7 @@ int main()
 	int height = 2400;
 	int dpi = 1200;
 
-	create_image(&img, fmt, width);
+	create_image(&img, fmt, width, height);
 	set_frontend(&dev,
 			/* fmt */ fmt,
 			/* width */ width * 4800 / dpi,
@@ -241,7 +223,7 @@ int main()
 			   0.5 /* y_start */,
 			   //1.0625 /* y_end */,
 			   height,
-			   600 /* y_dpi */,
+			   300 /* y_dpi */,
 			   HALF_STEP /* type */,
 			   200 /* fwdstep 0 = disable */,
 			   11640 /* exposure */);
@@ -268,29 +250,13 @@ int main()
 
 	//TODO: Read data quickly and reliably
 
-	
-
-	do {
-		int vword, linecnt;
-
-		vword = read_reg(&dev, GL843_VALIDWORD);
-		linecnt = (vword & ~255) * 2 / img.width;
-
-		if (linecnt > 0) {
-			read_image_data(&dev, &img, linecnt);
-		} else {
-			usleep(1000);
-		}
-	
-	} while(!read_reg(&dev, GL843_SCANFSH));
+	while (read_reg(&dev, GL843_BUFEMPTY));
+	recv_image(&dev, img.data, img.len, 0);
+	write_image("test.pnm", &img);
+	destroy_image(&img);
 
 //	while (!read_reg(&dev, GL843_FEEDFSH));
 //	while (!read_reg(&dev, GL843_BUFEMPTY));
-//	ret = read_image_data(&dev, &img, height);
-
-	write_image("test.pnm", &img);
-
-	destroy_image(&img);
 
 	while(!read_reg(&dev, GL843_HOMESNR))
 		usleep(10000);
