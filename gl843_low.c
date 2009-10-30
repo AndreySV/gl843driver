@@ -12,11 +12,13 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
  */
-
+#define _GNU_SOURCE
 #include <stdlib.h>
-#include <string.h>
 #include <stdarg.h>
+#include <string.h>
+#include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <libusb-1.0/libusb.h>
 
 #define GL843_PRIVATE
@@ -36,41 +38,6 @@
 #define BULK_OUT	1
 
 static struct ioregister gl843_ioregs[GL843_MAX_IOREG+1];
-
-int chk_ioreg(int addr, const char *func, int line)
-{
-	if (addr < 0 || addr > GL843_MAX_IOREG) {
-		vprintf_dbg(0, func, line, "Internal error: register "
-			"address 0x%x is out of range.\n", addr);
-	}
-	return addr;
-}
-
-/* Constructor */
-void create_device(struct gl843_device *dev)
-{
-	int i;
-
-	dev->ioregs = gl843_ioregs;
-	dev->regmap = gl843_regmap;
-	dev->devreg_names = gl843_devreg_names;
-	dev->regmap_index = gl843_regmap_index;
-	dev->max_ioreg = GL843_MAX_IOREG;
-	dev->min_devreg = dev->max_ioreg + 1;
-	dev->max_devreg = GL843_MAX_DEVREG - 1;
-	dev->max_dirty = -1;
-	dev->min_dirty = dev->max_ioreg;
-
-	for (i = 0; i < GL843_MAX_IOREG; i++) {
-		memset(&dev->ioregs[i], 0, sizeof(dev->ioregs[0]));
-		dev->ioregs[i].ioreg = i;
-	}
-	// CS4400F specific
-	dev->base_xdpi = 4800;
-	dev->base_ydpi = 1200;
-}
-
-/*** USB functions. ***/
 
 /* libusb_control_transfer wrapper that retries on interrupted system calls. */
 static int usb_ctrl_xfer(libusb_device_handle *dev_handle,
@@ -109,9 +76,44 @@ static int usb_bulk_xfer(struct libusb_device_handle *dev_handle,
 			length, transferred, timeout);
 		if (ret != LIBUSB_ERROR_INTERRUPTED)
 			break;
-		usleep(1000);
 	}
 	return ret;
+}
+
+int chk_ioreg(int addr, const char *func, int line)
+{
+	if (addr < 0 || addr > GL843_MAX_IOREG) {
+		vprintf_dbg(0, func, line, "Internal error: register "
+			"address 0x%x is out of range.\n", addr);
+	}
+	return addr;
+}
+
+/* Constructor */
+void create_device(struct gl843_device *dev)
+{
+	int i;
+
+	dev->ioregs = gl843_ioregs;
+	dev->regmap = gl843_regmap;
+	dev->devreg_names = gl843_devreg_names;
+	dev->regmap_index = gl843_regmap_index;
+	dev->max_ioreg = GL843_MAX_IOREG;
+	dev->min_devreg = dev->max_ioreg + 1;
+	dev->max_devreg = GL843_MAX_DEVREG - 1;
+	dev->max_dirty = -1;
+	dev->min_dirty = dev->max_ioreg;
+
+	for (i = 0; i < GL843_MAX_IOREG; i++) {
+		memset(&dev->ioregs[i], 0, sizeof(dev->ioregs[0]));
+		dev->ioregs[i].ioreg = i;
+	}
+
+	dev->head_pos = 0;
+
+	// CS4400F specific
+	dev->base_xdpi = 4800;
+	dev->base_ydpi = 1200;
 }
 
 static int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
@@ -250,39 +252,32 @@ chk_failed:
 	return -EIO;
 }
 
-int recv_image(struct gl843_device *dev, uint8_t *buf, size_t size, int addr)
+/* Receive image from the scanner. Don't call before GL843_BUFEMPTY == 0 */
+int recv_image(struct gl843_device *dev, uint8_t *buf, size_t stride, size_t lines)
 {
 	int ret;
-	int ep, port, len;
 	libusb_device_handle *h = dev->libusb_handle;
 	const int to = 10000;	/* USB timeout [ms] */
 
-	DBG(DBG_io, "buf = %p, addr = 0x%x, size = %zu\n", buf, addr, size);
-
-	write_reg(dev, GL843_RAMADDR, addr);
-	CHK(write_bulk_setup(dev, GL843__RAMRDDATA_, size, BULK_IN));
-
 	/* Transfer bulk data */
 
-	int total = 0;
-	while (size > 0) {
-		int outlen = 0;
-		len = size < 16384 ? size : 16384;
-		ret = usb_bulk_xfer(h, 0x81, buf, len, &outlen, to);
+	size_t total = 0;
+	int len, outlen = 0;
+
+	for (; lines > 0; lines--) {
+		write_reg(dev, GL843_RAMADDR, 0);
+		CHK(write_bulk_setup(dev, GL843__RAMRDDATA_, stride, BULK_IN));
+		ret = usb_bulk_xfer(h, 0x81, buf, stride, &outlen, to);
 		total += outlen;
-		DBG(DBG_io, "requested %d, received %d bytes. (%d total)\n",
-			len, outlen, total);
-		if (ret == LIBUSB_ERROR_OVERFLOW && len > outlen) {
-			DBG(DBG_io2, "overflow detected. len = %d > outlen = %d\n",
-				len, outlen);
-			/* Ignore underflows for now. FIXME. */
-		} else if (ret < 0)
+		DBG(DBG_io, "requested %d, received %d bytes. (%zu total)\n",
+			stride, outlen, total);
+		if (ret < 0)
 			goto chk_failed;
-		size -= outlen;
 		buf += outlen;
-		if (outlen < len)
+		if (outlen < stride)
 			break;
 	}
+
 	return 0;
 chk_failed:
 	DBG(DBG_error, "libusb error: %s\n", sanei_libusb_strerror(ret));

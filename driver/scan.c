@@ -31,7 +31,7 @@
  * d: moving distance in inches. > 0: forward, < 0: back
  *    WARNING: A bad value for d can crash the carriage into the wall.
  */
-int move_carriage(struct gl843_device *dev, float d)
+static int move_carriage(struct gl843_device *dev, float d)
 {
 	int ret;
 	int feedl;
@@ -108,35 +108,6 @@ chk_failed:
 	return ret;
 }
 
-/* Saturate value v */
-static float satf(float v, float min, float max)
-{
-	if (v < min)
-		v = min;
-	else if (v > max)
-		v = max;
-	return v;
-}
-
-/* AFE-specific, maximum gain as per the data sheet */
-static float __attribute__ ((pure)) max_gain()
-{
-	return 7.428;
-}
-
-/* AFE-specific, minimum gain as per the data sheet */
-static float __attribute__ ((pure)) min_gain()
-{
-	return 0.735;
-}
-
-/* AFE-specific: convert AFE gain to AFE register value. */
-static int gain2val(float g)
-{
-	g = satf(g, min_gain(), max_gain());
-	return (int) (283 - 208/g + 0.5);
-}
-
 static int scan_img(struct gl843_device *dev,
 		    uint8_t *buf,
 		    size_t stride, size_t height, int bpp,
@@ -162,32 +133,68 @@ chk_failed:
 	return ret;
 }
 
+/* Color-index-to-name, for debugging purposes */
+static const char *__attribute__ ((pure)) idx_name(int i)
+{
+	switch (i) {
+	case 0:
+		return "red";
+	case 1:
+		return "green";
+	case 2:
+		return "blue";
+	default:
+		return "(unknown)";
+	}
+}
+
+/* Saturate value v */
+static float __attribute__ ((pure)) satf(float v, float min, float max)
+{
+	if (v < min)
+		v = min;
+	else if (v > max)
+		v = max;
+	return v;
+}
+
+/* AFE-specific, maximum gain as per the data sheet */
+float __attribute__ ((pure)) max_afe_gain()
+{
+	return 7.428;
+}
+
+/* AFE-specific, minimum gain as per the data sheet */
+float __attribute__ ((pure)) min_afe_gain()
+{
+	return 0.735;
+}
+
+/* AFE-specific: convert AFE gain to AFE register value. */
+static int __attribute__ ((pure)) gain_to_val(float g)
+{
+	g = satf(g, min_afe_gain(), max_afe_gain());
+	return (int) (283 - 208/g + 0.5);
+}
+
+static int write_afe_gain(struct gl843_device *dev, int i, float g)
+{
+	DBG(DBG_info, "%s gain = %.2f, val = %d\n",
+		idx_name(i), g, gain_to_val(g));
+	return write_afe(dev, 40 + i, gain_to_val(g));
+}
+
 struct img_stat
 {
-	int min, max;
-	float avg;
+	int min[3], max[3];
+	float avg[3];
 };
 
-static void add_sample(struct img_stat *stat, int c)
-{
-	stat->min = (c < stat->min) ? c : stat->min;
-	stat->max = (c > stat->max) ? c : stat->max;
-	stat->avg += c;
-}
-
-static void clear_stat(struct img_stat *stat)
-{
-	stat->min = 65535;
-	stat->max = 0;
-	stat->avg = 0;
-}
-
 static void get_image_stats(struct gl843_image *img,
-			    struct img_stat *r_stat,
-			    struct img_stat *g_stat,
-			    struct img_stat *b_stat)
+			    struct img_stat *stat)
 {
-	int bpp, n, m, i;
+	int n, m;
+	int i, j;
 
 	if (img->bpp != 48) {
 		DBG(DBG_error, "img->bpp != 48 (PIXFMT_RGB16)\n");
@@ -201,26 +208,26 @@ static void get_image_stats(struct gl843_image *img,
 
 	/* Calculate R, G and B component minimum, maximum and average. */
 
-	clear_stat(r_stat);
-	clear_stat(g_stat);
-	clear_stat(b_stat);
-
-	for (i = 0; i < n; i += 6) {
-		uint16_t *p = (uint16_t *)(img->data + i);
-		add_sample(r_stat, *p++);
-		add_sample(g_stat, *p++);
-		add_sample(b_stat, *p++);
+	for (i = 0; i < 3; i++) {
+		stat->min[i] = 65535;
+		stat->max[i] = 0;
+		stat->avg[i] = 0;
 	}
-	r_stat->avg = r_stat->avg / m;
-	g_stat->avg = g_stat->avg / m;
-	b_stat->avg = b_stat->avg / m;
+	for (j = 0; j < n; j += 6) {
+		uint16_t *p = (uint16_t *)(img->data + j);
+		for (i = 0; i < 3; i++) {
+			int c = *p++;
+			stat->min[i] = (c < stat->min[i]) ? c : stat->min[i];
+			stat->max[i] = (c > stat->max[i]) ? c : stat->max[i];
+			stat->avg[i] += c;
+		}
+	}
 
-	DBG(DBG_info, "R(min,max,avg) = %d, %d, %.2f\n",
-		r_stat->min, r_stat->max, r_stat->avg);
-	DBG(DBG_info, "G(min,max,avg) = %d, %d, %.2f\n",
-		g_stat->min, g_stat->max, g_stat->avg);
-	DBG(DBG_info, "B(min,max,avg) = %d, %d, %.2f\n",
-		b_stat->min, b_stat->max, b_stat->avg);
+	for (i = 0; i < 3; i++) {
+		stat->avg[i] = stat->avg[i] / m;
+		DBG(DBG_info, "%s (min,max,avg) = %d, %d, %.2f\n",
+			idx_name(i), stat->min[i], stat->max[i], stat->avg[i]);
+	}
 }
 
 /*
@@ -245,114 +252,86 @@ int find_blacklevel(struct gl843_device *dev,
 		    struct gl843_image *img,
 		    uint8_t low, uint8_t high)
 {
-	int ret;
-	int g = gain2val(1.0);
-	struct img_stat rlo_stat, rhi_stat;
-	struct img_stat glo_stat, ghi_stat;
-	struct img_stat blo_stat, bhi_stat;
-	double rk, gk, bk, rm, gm, bm;
-	int ro, go, bo;
+	int ret, i;
+	int gval = gain_to_val(1.0);
+	struct img_stat lo_stat, hi_stat;
 
 	/* Scan with the lamp off to produce black pixels. */
 	CHK(set_lamp(dev, LAMP_OFF, 0));
 
-	/* Set gain = 1.0 */
-
-	CHK(write_afe(dev, 40, g));
-	CHK(write_afe(dev, 41, g));
-	CHK(write_afe(dev, 42, g));
-
 	/* Sample 'low' black level */
 
-	CHK(write_afe(dev, 32, low));
-	CHK(write_afe(dev, 33, low));
-	CHK(write_afe(dev, 34, low));
-
-	CHK(scan_img(dev, img->data,
-		img->stride, img->height, img->bpp, 10000));
-
-	get_image_stats(img, &rlo_stat, &glo_stat, &blo_stat);
+	for (i = 0; i < 3; i++) {
+		CHK(write_afe_gain(dev, i, 1.0));
+		CHK(write_afe(dev, 32 + i, low));  /* Set 'low' black level */
+	}
+	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	get_image_stats(img, &lo_stat);
 
 	/* Sample 'high' black level */
 
-	CHK(write_afe(dev, 32, high));
-	CHK(write_afe(dev, 33, high));
-	CHK(write_afe(dev, 34, high));
+	for (i = 0; i < 3; i++) {
+		CHK(write_afe(dev, 32 + i, high)); /* Set 'high' black level */
+	}
+	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	get_image_stats(img, &hi_stat);
 
-	CHK(scan_img(dev, img->data,
-		img->stride, img->height, img->bpp, 10000));
+	/* Use the line eqation to find and set the best offset value */
 
-	get_image_stats(img, &rhi_stat, &ghi_stat, &bhi_stat);
+	for (i = 0; i < 3; i++) {
+		double m, c; /* y = mx + c */
+		int o;	/* offset */
+		m = (hi_stat.avg[i] - lo_stat.avg[i]) / (high - low);
+		c = lo_stat.avg[i] - m * low;
+		/* TODO: range checking */
+		o = (int) (-c / m + 0.5);
+		CHK(write_afe(dev, 32 + i, o));
+		DBG(DBG_info, "AFE %s offset = %d\n", idx_name(i), o);
+	}
 
-	/* Use the line eqation to find the best offset value */
-
-	rk = (double) (rhi_stat.avg - rlo_stat.avg) / (high - low);
-	gk = (double) (ghi_stat.avg - glo_stat.avg) / (high - low);
-	bk = (double) (bhi_stat.avg - blo_stat.avg) / (high - low);
-
-	rm = rlo_stat.avg - rk * low;
-	gm = glo_stat.avg - bk * low;
-	bm = blo_stat.avg - gk * low;
-
-	/* TODO: range checking */
-
-	ro = (int)(-rm / rk + 0.5);
-	go = (int)(-gm / gk + 0.5);
-	bo = (int)(-bm / bk + 0.5);
-
-	CHK(write_afe(dev, 32, ro));
-	CHK(write_afe(dev, 33, go));
-	CHK(write_afe(dev, 34, bo));
-
-	DBG(DBG_info, "RGB offset values: %d, %d, %d\n", ro, go, bo);
-#if 0
 	/* Debug: Test the result: */
-	CHK(scan_img(dev, img->data,
-		img->stride, img->height, img->bpp, 10000));
-	get_image_stats(img, &rlo_stat, &glo_stat, &blo_stat);
-#endif
+	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	get_image_stats(img, &lo_stat);
+
 	ret = 0;
 chk_failed:
 	return ret;	
 }
 
-
+/* Wait until the lamp has warmed up.
+ * Note: Don't forget to turn it on first ...
+ */
 int warm_up_lamp(struct gl843_device *dev,
 		 struct gl843_image *img,
 		 enum gl843_lamp source,
+		 int lamp_timeout,
 		 int timeout /* TODO */)
 {
-	int ret;
+	int ret, i;
+	struct img_stat stat = {};
 
-	struct img_stat r_stat = {};
-	struct img_stat g_stat = {};
-	struct img_stat b_stat = {};
+	CHK(set_lamp(dev, source, lamp_timeout));
 
-	int gval = gain2val(min_gain());
-
-	CHK(write_afe(dev, 40, gval));
-	CHK(write_afe(dev, 41, gval));
-	CHK(write_afe(dev, 42, gval));
-
-	CHK(set_lamp(dev, source, 4));
+	for (i = 0; i < 3; i++)
+		CHK(write_afe_gain(dev, i, min_afe_gain()));
 
 	while (1) {
 		float r0, g0, b0;	/* Previous averages */
 
-		r0 = r_stat.avg;
-		g0 = g_stat.avg;
-		b0 = b_stat.avg;
+		r0 = stat.avg[0];
+		g0 = stat.avg[1];
+		b0 = stat.avg[2];
 
 		CHK(scan_img(dev, img->data,
 			img->stride, img->height, img->bpp, 10000));
-		get_image_stats(img, &r_stat, &g_stat, &b_stat);
+		get_image_stats(img, &stat);
 
 		DBG(DBG_info, "delta RGB average: %.2f, %.2f, %.2f\n",
-			r_stat.avg - r0, g_stat.avg - g0, b_stat.avg - b0);
+			stat.avg[0] - r0, stat.avg[1] - g0, stat.avg[2] - b0);
 
-		if (abs(r_stat.avg - r0) < 10 &&
-		    abs(g_stat.avg - g0) < 10 &&
-		    abs(b_stat.avg - b0) < 10) {
+		if (abs(stat.avg[0] - r0) < 10 &&
+		    abs(stat.avg[1] - g0) < 10 &&
+		    abs(stat.avg[2] - b0) < 10) {
 			break;
 		}
 		usleep(500000);
@@ -362,80 +341,31 @@ chk_failed:
 	return ret;	
 }
 
-/*
- * Calculate new gain
- *
- * curr: sampled max value at current gain
- * tgt:  target max value at new gain, must be 1 - 65535.
- * g:    current gain
- */
-float calc_gain(int curr, int tgt, float g)
-{
-	g = satf(g, min_gain(), max_gain());
-	tgt = (tgt < 1) ? 1 : tgt;
-	curr = (curr < 1) ? 1 : curr;
-	return satf(g * tgt / curr, min_gain(), max_gain());
-}
-
 /* Adjust the AFE gain */
-
 int set_gain(struct gl843_device *dev,
-	     struct gl843_image *img,
-	     enum gl843_lamp source)
+	     struct gl843_image *img)
 {
-	int ret;
+	int ret, i;
+	float g[3];
+	struct img_stat stat;
+	/* Target at 95% of max allows slight increase in lamp brightness. */
+	const float target = 65535 * 0.95;
 
-	float rg, gg, bg;
-	int rval, gval, bval, prev_rval, prev_gval, prev_bval;
-
-	struct img_stat r_stat = {};
-	struct img_stat g_stat = {};
-	struct img_stat b_stat = {};
-
-	float target = 65535 * 0.98;
-
-	CHK(set_lamp(dev, source, 4));
-
-	int done = 0;
-
-	while (done < 8) {
-		CHK(write_afe(dev, 40, gain2val(rg)));
-		CHK(write_afe(dev, 41, gain2val(gg)));
-		CHK(write_afe(dev, 42, gain2val(bg)));
-
-		CHK(scan_img(dev, img->data,
-			img->stride, img->height, img->bpp, 10000));
-
-		get_image_stats(img, &r_stat, &g_stat, &b_stat);
-
-		rg = 1/satf(r_stat.max / (rg * target), 1/max_gain(), 1/min_gain());
-		gg = 1/satf(g_stat.max / (gg * target), 1/max_gain(), 1/min_gain());
-		bg = 1/satf(b_stat.max / (bg * target), 1/max_gain(), 1/min_gain());
-
-		prev_rval = rval;
-		prev_gval = gval;
-		prev_bval = bval;
-
-		rval = gain2val(rg);
-		gval = gain2val(gg);
-		bval = gain2val(bg);
-
-		if (abs(rval - prev_rval) <= 1 &&
-		    abs(gval - prev_gval) <= 1 &&
-		    abs(bval - prev_bval) <= 1) {
-			done++;
-			printf("done = %d\n", done);
-		} else {
-			done = 0;
-		}
-
-		DBG(DBG_info, "Gain (RGB) = %.2f, %.2f, %.2f\n", rg, gg, bg);
-		DBG(DBG_info, "RGB gain values: %d, %d, %d\n",
-			gain2val(rg), gain2val(gg), gain2val(bg));
-
-		usleep(500000);
+	/* Scan at minimum gain */
+	for (i = 0; i < 3; i++) {
+		g[i] = min_afe_gain();
+		CHK(write_afe_gain(dev, i, g[i]));
 	}
+	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	get_image_stats(img, &stat);
 
+	/* Calculate and set gain that enables full dynamic range of AFE. */
+	for (i = 0; i < 3; i++) {
+		if (stat.max[i] < 1)
+			stat.max[i] = 1;	/* avoid div-by-zero */
+		g[i] = g[i] * target / stat.max[i];
+		CHK(write_afe_gain(dev, i, g[i]));
+	}
 
 	ret = 0;
 chk_failed:
@@ -494,51 +424,8 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
 
 	CHK(find_blacklevel(dev, img, 75, 0));
-
-	CHK(warm_up_lamp(dev, img, LAMP_PLATEN, 0));
-#if 0
-
-	int i,j,k;
-
-	for (j = 0; j < 10; j++) {
-		int offset = j*10*img->stride;
-
-		CHK(set_afe_offsets_and_gains(dev,
-			130, 128, 0,
-			j*25, 96, 96));
-
-		CHK(scan_img(dev, img->data + offset,
-			img->stride, 10, img->bpp, 10000));
-
-		int rmin = 65535, gmin = 65535, bmin = 65535;
-		int ravg = 0, gavg = 0, bavg = 0;
-		int rmax = 0, gmax = 0, bmax = 0;
-		uint16_t *p = (uint16_t *) (img->data + offset);
-		for (i = 0, k = 1; i < img->stride * 9; i += 6, k++) {
-			rmin = (*p < rmin) ? *p : rmin;
-			rmax = (*p > rmax) ? *p : rmax;
-			ravg += *p;
-			p++;
-			gmin = (*p < gmin) ? *p : gmin;
-			gmax = (*p > gmax) ? *p : gmax;
-			gavg += *p;
-			p++;
-			bmin = (*p < bmin) ? *p : bmin;
-			bmax = (*p > bmax) ? *p : bmax;
-			bavg += *p;
-			p++;
-		}
-		ravg = ravg / k;
-		gavg = gavg / k;
-		bavg = bavg / k;
-
-		printf("min = %d,%d,%d, max = %d,%d,%d, avg = %d, %d, %d\n",
-			rmin, gmin, bmin, rmax, gmax, bmax,
-			ravg, gavg, bavg);
-	}
-	write_image("test.pnm", img);
-
-#endif
+	CHK(warm_up_lamp(dev, img, LAMP_PLATEN, 0, 0));
+	CHK(set_gain(dev, img));
 
 	destroy_image(img);
 

@@ -199,3 +199,17 @@ const char *sanei_strerror(int errcode)
 		return "undefined SANE error";
 	}
 }
+
+pid_t sanei_thread_begin(int (*func) (void *args), void *args)
+{
+	pid_t pid;
+	pid = fork();
+	if (pid == 0) {
+		int ret;
+		/* Run child process. */
+		ret = func(args);
+		exit(ret);
+	}
+	return pid;
+}
+

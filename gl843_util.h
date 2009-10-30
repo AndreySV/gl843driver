@@ -72,6 +72,7 @@ int __attribute__ ((pure)) host_is_little_endian(void);
 void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len);
 
 const char *sanei_libusb_strerror(int errcode);
+pid_t sanei_thread_begin(int (*func) (void *args), void *args);
 
 typedef enum
   {

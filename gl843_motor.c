@@ -117,10 +117,12 @@ void cs4400f_build_motor_table(struct gl843_motor_setting *m,
 void cs4400f_get_fast_feed_motor_table(struct gl843_motor_setting *m);
 
 
+
+
 /* Set up the scanning envelope for the CS4400F
  *
  * y_start: scanning start [inches]
- * y_end:   scanning end [inches]
+ * lincnt:  number of lines to scan
  * type:    step type
  * speed:   scanning speed [pixel clock ticks per step]
  * fwdstep: scan at most fwdstep steps, then backtrack. 0 = disable
@@ -218,9 +220,6 @@ int setup_scanning_profile(struct gl843_device *dev,
 	}
 
 	//lincnt = ((int) (Ks * (y_end - y_start) + 0.5));
-
-	// TEST
-	//lincnt = 312;
 
 	if (lincnt < 1) {
 		DBG(DBG_warn, "Start and end positions are the same.\n");

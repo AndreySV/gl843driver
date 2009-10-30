@@ -19,6 +19,13 @@
 #include <libusb-1.0/libusb.h>
 #include "gl843_regs.h"
 
+struct data_chunk
+{
+	struct data_chunk *next;
+	size_t size;
+	uint8_t buf[0];
+};
+
 struct gl843_device
 {
 	libusb_device_handle *libusb_handle;
@@ -34,6 +41,8 @@ struct gl843_device
 
 	unsigned int base_xdpi;/* Dots per inch in CCD */
 	unsigned int base_ydpi;/* Dots per inch at motor full step. */
+
+	float head_pos;	/* Estimated scanner head position in inches. */
 };
 
 /* xfer_bulk() and xfer_table() flags */
@@ -48,7 +57,7 @@ int xfer_bulk(struct gl843_device *dev, uint8_t *buf, size_t size,
 int send_motor_table(struct gl843_device *dev, int table, size_t len, uint16_t *a);
 int send_gamma_table(struct gl843_device *dev, int table, size_t len, uint16_t *g);
 int send_shading(struct gl843_device *dev, uint8_t *buf, size_t size, int addr);
-int recv_image(struct gl843_device *dev, uint8_t *buf, size_t size, int addr);
+int recv_image(struct gl843_device *dev, uint8_t *buf, size_t stride, size_t lines);
 
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val);
 void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len);

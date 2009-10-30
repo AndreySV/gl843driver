@@ -19,17 +19,17 @@ void set_lamp(struct gl843_device *dev, enum gl843_lamp state, int timeout)
 {
 	struct regset_ent lamp[] = {
 		/* 0x03 */
-		{ GL843_LAMPDOG, (timeout != 0) ? 1 : 0 },
+		{ GL843_LAMPDOG, 0 },
+		{ GL843_LAMPTIM, timeout },
 		{ GL843_XPASEL, (state == LAMP_TA) ? 1 : 0 },
 		{ GL843_LAMPPWR, (state != LAMP_OFF) ? 1 : 0 },
-		{ GL843_LAMPTIM, timeout },
-
 		{ GL843_MTLLAMP, 0 },	/* 0x05: timeout = LAMPTIM * 2^MTLLAMP */
 		{ GL843_LPWMEN, 0 },	/* 0x0A: 0 = Disable lamp PWM */
 		{ GL843_ONDUR, 159 },	/* 0x98,0x99 */
 		{ GL843_OFFDUR, 175 },	/* 0x9A,0x9B */
 	};
 	set_regs(dev, lamp, ARRAY_SIZE(lamp));
+	write_reg(dev, GL843_LAMPDOG, (timeout != 0) ? 1 : 0);
 }
 
 void set_motor(struct gl843_device *dev)
@@ -112,7 +112,6 @@ void set_frontend(struct gl843_device *dev,
 		  int expr, int expg, int expb)
 {
 	int scanmod;
-	int filter = 0;
 
 	int tgw = 10, tgshld = 11;
 	int ck1map = 0, ck3map = 0, ck4map = 0;
@@ -142,7 +141,6 @@ void set_frontend(struct gl843_device *dev,
 
 		vsmp = 11;
 		rhi = 10; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 8;
-		//rhi = 0; rlow = 0; ghi = 0; glow = 0; bhi = 0; blow = 0;
 
 	} else if (afe_dpi == 2400) {
 
@@ -193,11 +191,11 @@ void set_frontend(struct gl843_device *dev,
 		scanmod = 7;
 		break;
 	case PXFMT_RGB8:	/* 24 bits per pixel, RGB color */
-		maxwd = 3 * width;
+		maxwd = width;
 		scanmod = 7;
 		break;
 	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
-		maxwd = 6 * width / 6;
+		maxwd = width;
 		scanmod = 7;
 		break;
 	}
@@ -206,10 +204,7 @@ void set_frontend(struct gl843_device *dev,
 	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
 	use_gamma = (fmt != PXFMT_GRAY16 && fmt != PXFMT_RGB16);
 
-	 // TEST
-	scanmod = 7;
-
-	//maxwd = ((ALIGN(fmt * width, 8) >> 3) * dpi) / afe_dpi;
+	//maxwd = width * dpi / afe_dpi;
 
 	DBG(DBG_info, "maxwd = %d, monochrome = %d, deep_color = %d, "
 		"use_gamma = %d, dpi = %d\n", maxwd, monochrome, deep_color,
@@ -221,8 +216,8 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_BITSET, deep_color },
 		{ GL843_FILTER, 0 },		/* 0 = color (1,2,3 = R,G,B) */
 		/* 0x06 */
-		{ GL843_SCANMOD, scanmod },	/* 0 = 12 clocks/pixel (24bit mode) */
-						/* 7 = 16 clocks/pixel (48bit mode) */
+		{ GL843_SCANMOD, scanmod },	/* 0 = 12 clks/px (24bit) */
+						/* 7 = 16 clks/px (48bit) */
 		/* RGB exposure times */
 
 		{ GL843_EXPR, expr },	/* 0x10,0x11 */
@@ -266,17 +261,16 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_CK1MAP, ck1map },
 		{ GL843_CK3MAP, ck3map },
 		{ GL843_CK4MAP, ck4map },
+
+		/* Hardware CCD RGB-displacement 
+		 * The Canoscan 4400F does not have enough RAM
+		 * to support LNOFSET == 48 when y_dpi == 1200.
+		 */
 		/* 0x09 */
 		{ GL843_BLINE1ST, 1 },	/* First CCD line is blue */
+		/* 0xA0: R-to-G-to-B line displacement */
+		{ GL843_LNOFSET, 0 }, /* val = y_dpi * 12 / 300 */
 
-		/* 0xA0: /* R-to-G-to-B line displacement */
-#if 0
-		/* We can't use this feature with the Canoscan 4400F as
-		 * there's barely enough image buffer RAM installed.
-		 * Trying results in frequent buffer overruns.
-		 */
-		{ GL843_LNOFSET, 24 },
-#endif
 	};
 	set_regs(dev, frontend, ARRAY_SIZE(frontend));
 	flush_regs(dev);
@@ -292,8 +286,9 @@ void set_frontend(struct gl843_device *dev,
 		{ GL843_DUMMY, 20 },
 		{ GL843_MAXWD, maxwd },
 
+		/* Hardware RGB->gray conversion. Broken in the CS4400F. */
 		/* 0x01 */
-		{ GL843_TRUEGRAY, monochrome },
+		{ GL843_TRUEGRAY, 0 },	/* 0 = disable */
 		/* 0xA3,0xA4,0xA5 */
 		{ GL843_TRUER, (int) (0.2989 * 255) },
 		{ GL843_TRUEG, (int) (0.5870 * 255) },
