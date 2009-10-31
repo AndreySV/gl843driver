@@ -36,7 +36,7 @@
 
 #define DBG_error0      0	/* unfilterable messages */
 #define DBG_error       1	/* fatal errors */
-#define DBG_init        2	/* initialization and scanning time messages */
+#define DBG_msg         2	/* scanner workflow messages */
 #define DBG_warn        3	/* warnings and non-fatal errors */
 #define DBG_info        4	/* informational messages */
 #define DBG_proc        5	/* starting/finishing functions */

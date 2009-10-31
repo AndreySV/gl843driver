@@ -109,21 +109,22 @@ chk_failed:
 }
 
 static int scan_img(struct gl843_device *dev,
-		    uint8_t *buf,
-		    size_t stride, size_t height, int bpp,
+		    struct gl843_image *img,
 		    int timeout)
 {
 	int ret, i;
+	uint8_t *buf;
 
-	CHK(write_reg(dev, GL843_LINCNT, height));
+	CHK(write_reg(dev, GL843_LINCNT, img->height));
 	CHK(write_reg(dev, GL843_SCAN, 1));
 	CHK(write_reg(dev, GL843_MOVE, 255));
 
 	while (read_reg(dev, GL843_BUFEMPTY));
 
-	for (i = 0; i < height; i++) {
-		CHK(read_line(dev, buf, stride, bpp, timeout));
-		buf += stride;
+	buf = img->data;
+	for (i = 0; i < img->height; i++) {
+		CHK(read_line(dev, buf, img->stride, img->bpp, timeout));
+		buf += img->stride;
 	}
 
 	CHK(write_reg(dev, GL843_SCAN, 0));
@@ -190,6 +191,7 @@ struct img_stat
 	float avg[3];
 };
 
+/* Calculate R, G and B component minimum, maximum and average. */
 static void get_image_stats(struct gl843_image *img,
 			    struct img_stat *stat)
 {
@@ -205,8 +207,6 @@ static void get_image_stats(struct gl843_image *img,
 	n = img->stride * (img->height-1);
 	/* Pixel count. */
 	m = img->width * (img->height-1);
-
-	/* Calculate R, G and B component minimum, maximum and average. */
 
 	for (i = 0; i < 3; i++) {
 		stat->min[i] = 65535;
@@ -227,6 +227,41 @@ static void get_image_stats(struct gl843_image *img,
 		stat->avg[i] = stat->avg[i] / m;
 		DBG(DBG_info, "%s (min,max,avg) = %d, %d, %.2f\n",
 			idx_name(i), stat->min[i], stat->max[i], stat->avg[i]);
+	}
+}
+
+/* Calculate average pixel intensity of every column.
+ * The result is stored in the first line of the image.
+ */
+static void get_vertical_average(struct gl843_image *img)
+{
+	int i, y, height, avg;
+	uint16_t *p0, *p;
+
+	if (img->bpp != 48) {
+		DBG(DBG_error, "img->bpp != 48 (PIXFMT_RGB16)\n");
+		return;
+	}
+	if (img->height < 2) {
+		DBG(DBG_error, "img->height < 2\n");
+		return;
+	}
+
+	height = img->height - 1; /* Ignoring last line, may have bad pixels */
+
+	for (i = 0; i < img->stride; i += 2) {
+		p0 = (uint16_t *)(img->data + i);
+
+		/* Get average of all pixels in current column */
+
+		avg = 0;
+		p = p0;
+		for (y = 0; y < height; y++) {
+			avg += *p;
+			p += img->stride;
+		}
+		avg = avg / height;
+		*p0 = avg;
 	}
 }
 
@@ -256,6 +291,8 @@ int find_blacklevel(struct gl843_device *dev,
 	int gval = gain_to_val(1.0);
 	struct img_stat lo_stat, hi_stat;
 
+	DBG(DBG_msg, "Calibrating A/D-converter black level.\n");
+
 	/* Scan with the lamp off to produce black pixels. */
 	CHK(set_lamp(dev, LAMP_OFF, 0));
 
@@ -265,7 +302,7 @@ int find_blacklevel(struct gl843_device *dev,
 		CHK(write_afe_gain(dev, i, 1.0));
 		CHK(write_afe(dev, 32 + i, low));  /* Set 'low' black level */
 	}
-	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	CHK(scan_img(dev, img, 10000));
 	get_image_stats(img, &lo_stat);
 
 	/* Sample 'high' black level */
@@ -273,7 +310,7 @@ int find_blacklevel(struct gl843_device *dev,
 	for (i = 0; i < 3; i++) {
 		CHK(write_afe(dev, 32 + i, high)); /* Set 'high' black level */
 	}
-	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	CHK(scan_img(dev, img, 10000));
 	get_image_stats(img, &hi_stat);
 
 	/* Use the line eqation to find and set the best offset value */
@@ -290,7 +327,7 @@ int find_blacklevel(struct gl843_device *dev,
 	}
 
 	/* Debug: Test the result: */
-	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	CHK(scan_img(dev, img, 10000));
 	get_image_stats(img, &lo_stat);
 
 	ret = 0;
@@ -298,43 +335,74 @@ chk_failed:
 	return ret;	
 }
 
+/* Get progress, in percent, of lamp warmup */
+static float get_progress(float dL_start, float dL_end, float dL_prev, float dL)
+{
+	/* Linearize and scale dL and dL_prev to the range [0.0, 100.0] */
+	float span;
+	float progress, prev_progress;
+
+	span = logf(dL_start) - logf(dL_end);
+	prev_progress = ((logf(dL_start) - logf(dL_prev)) / span) * 100;
+	progress = ((logf(dL_start) - logf(dL)) / span) * 100;
+
+	/* Don't let progress go backwards ... */
+	if (prev_progress > progress)
+		progress = prev_progress;
+
+	return satf(progress, 0, 100);
+}
+
 /* Wait until the lamp has warmed up.
  * Note: Don't forget to turn it on first ...
  */
 int warm_up_lamp(struct gl843_device *dev,
-		 struct gl843_image *img,
-		 enum gl843_lamp source,
-		 int lamp_timeout,
-		 int timeout /* TODO */)
+		 struct gl843_image *img)
 {
 	int ret, i;
-	struct img_stat stat = {};
+	int n;			/* Number of scans */
+	struct img_stat s;
 
-	CHK(set_lamp(dev, source, lamp_timeout));
+	float L = 0, L_prev;	/* Lamp intensity */
+	float dL = -1, dL_prev;	/* Lamp intensity delta */
+	float dL_start = -1;	/* Inital intensity delta */
+	float dL_end = 15;	/* Target intensity delta */
+
+	DBG(DBG_msg, "Warming up lamp.\n");
 
 	for (i = 0; i < 3; i++)
 		CHK(write_afe_gain(dev, i, min_afe_gain()));
 
+	n = 0;
 	while (1) {
-		float r0, g0, b0;	/* Previous averages */
+		/* Scan and get lamp intensity, L and intensity delta, dL.
+		 * Here L is defined as the average of
+		 * all subpixels in the scanned image. */
+		L_prev = L;
+		CHK(scan_img(dev, img, 10000));
+		get_image_stats(img, &s);
+		L = 0;
+		for (i = 0; i < 3; i++)
+			L += s.avg[i] / 3;
 
-		r0 = stat.avg[0];
-		g0 = stat.avg[1];
-		b0 = stat.avg[2];
+		dL_prev = dL;
+		dL = abs(L - L_prev);
 
-		CHK(scan_img(dev, img->data,
-			img->stride, img->height, img->bpp, 10000));
-		get_image_stats(img, &stat);
+		if (n > 1)
+			DBG(DBG_info, "L = %.2f, dL = %.2f\n", L, dL);
 
-		DBG(DBG_info, "delta RGB average: %.2f, %.2f, %.2f\n",
-			stat.avg[0] - r0, stat.avg[1] - g0, stat.avg[2] - b0);
+		if (n == 2) {
+			dL_start = dL;
+		} else if (n > 2) {
+			float p = get_progress(dL_start, dL_end, dL_prev, dL);
+			DBG(DBG_msg, "  progress: %.0f%%\n", p);
 
-		if (abs(stat.avg[0] - r0) < 10 &&
-		    abs(stat.avg[1] - g0) < 10 &&
-		    abs(stat.avg[2] - b0) < 10) {
-			break;
+			/* The lamp is warm when dL is small enough */
+			if (dL < dL_end)
+				break;
 		}
 		usleep(500000);
+		n++;
 	}
 	ret = 0;
 chk_failed:
@@ -351,12 +419,14 @@ int set_gain(struct gl843_device *dev,
 	/* Target at 95% of max allows slight increase in lamp brightness. */
 	const float target = 65535 * 0.95;
 
+	DBG(DBG_msg, "Calibrating A/D-converter gain.\n");
+
 	/* Scan at minimum gain */
 	for (i = 0; i < 3; i++) {
 		g[i] = min_afe_gain();
 		CHK(write_afe_gain(dev, i, g[i]));
 	}
-	CHK(scan_img(dev, img->data, img->stride, img->height, img->bpp, 10000));
+	CHK(scan_img(dev, img, 10000));
 	get_image_stats(img, &stat);
 
 	/* Calculate and set gain that enables full dynamic range of AFE. */
@@ -371,6 +441,7 @@ int set_gain(struct gl843_device *dev,
 chk_failed:
 	return ret;	
 }
+
 
 int do_warmup_scan(struct gl843_device *dev, float y_pos)
 {
@@ -424,7 +495,8 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
 
 	CHK(find_blacklevel(dev, img, 75, 0));
-	CHK(warm_up_lamp(dev, img, LAMP_PLATEN, 0, 0));
+	CHK(set_lamp(dev, LAMP_PLATEN, 4));
+	CHK(warm_up_lamp(dev, img));
 	CHK(set_gain(dev, img));
 
 	destroy_image(img);
