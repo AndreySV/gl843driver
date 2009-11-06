@@ -45,6 +45,7 @@ void destroy_image(struct gl843_image *img)
 
 void write_image(const char *filename, struct gl843_image *img)
 {
+	int do_swap;
 	enum gl843_pixformat fmt = img->bpp;
 
 	FILE *file = fopen(filename, "w");
@@ -72,9 +73,10 @@ void write_image(const char *filename, struct gl843_image *img)
 		break;
 	}
 
-	if ((fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16)
-		&& host_is_little_endian())
-	{
+	do_swap = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16)
+		&& host_is_little_endian();
+
+	if (do_swap) {
 		swap_buffer_endianness((uint16_t *)img->data,
 			(uint16_t *)img->data, img->len / 2);
 	}
@@ -82,6 +84,11 @@ void write_image(const char *filename, struct gl843_image *img)
 	if (fwrite(img->data, img->len, 1, file) != 1) {
 		DBG(DBG_error0, "Error writing %s: %s\n",
 			filename, strerror(errno));
+	}
+
+	if (do_swap) {
+		swap_buffer_endianness((uint16_t *)img->data,
+			(uint16_t *)img->data, img->len / 2);
 	}
 }
 

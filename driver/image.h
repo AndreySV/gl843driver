@@ -41,31 +41,6 @@ void destroy_image(struct gl843_image *img);
 void write_image(const char *filename, struct gl843_image *img);
 /* TODO: Formatting and DSP operations, e.g BGR->RGB reordering. */
 
-/* Calculate shading
- *
- * darkscan:  Scanned white line, with lamp off.
- *            The format is either packed or planar pixels,
- *            16 bits per color component, in the host's endianness.
- *
- * lightscan: Scanned white line, with lamp on.
- *            The format is the same as for darkscan.
- *
- * target:    Target white level
- *
- * g:         Gain, 4 or 8.
- *
- * n:         Number of pixels
- *
- * Returns:   New shading buffer for the scanner, 12*n bytes long in the
- *            host's endianness, in packed or planar format, depending
- *            on the input.
- */
-uint8_t *calculate_shading(uint16_t *darkscan,
-			   uint16_t *lightscan,
-			   uint16_t target,
-			   unsigned int G,
-			   size_t n);
-
 /* Calculate gamma correction table
  * gamma: gamma coefficient
  */

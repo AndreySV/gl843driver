@@ -34,6 +34,14 @@
 			goto chk_failed;	\
 	} while (0)
 
+#define CHK_MEM(x)				\
+	do {					\
+		void *p;			\
+		p = (x);			\
+		if (p == NULL)			\
+			goto chk_mem_failed;	\
+	} while (0)
+
 #define DBG_error0      0	/* unfilterable messages */
 #define DBG_error       1	/* fatal errors */
 #define DBG_msg         2	/* scanner workflow messages */

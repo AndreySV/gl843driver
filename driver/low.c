@@ -401,14 +401,27 @@ chk_failed:
 	return ret;
 }
 
-int send_shading(struct gl843_device *dev, uint8_t *buf, size_t len)
+/* Send shading data to the scanner.
+ * buf: data buffer
+ * len: length in bytes
+ */
+int send_shading(struct gl843_device *dev, uint16_t *buf, size_t len, int addr)
 {
 	int ret, outlen;
 
-	CHK(write_reg(dev, GL843_RAMADDR, 0));
+	if (host_is_big_endian())
+		swap_buffer_endianness(buf, buf, len / 2);
+
+	CHK(write_reg(dev, GL843_RAMADDR, addr));
 	CHK(write_bulk_setup(dev, GL843__RAMWRDATA_, len, BULK_OUT));
-	CHK(usb_bulk_xfer(dev->usbdev, 2, buf, len, &outlen, 1000));
+	CHK(usb_bulk_xfer(dev->usbdev, 2, (uint8_t *)buf, len, &outlen, 1000));
+	DBG(DBG_io, "writing %zu bytes, %d were sent.\n", len, outlen);
+
+	ret = 0;
+
 chk_failed:
+	if (host_is_big_endian())
+		swap_buffer_endianness(buf, buf, len / 2);
 	return ret;
 }
 

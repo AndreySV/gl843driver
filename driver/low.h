@@ -101,6 +101,13 @@ int send_motor_table(struct gl843_device *dev, int table, uint16_t *tbl,
 int send_gamma_table(struct gl843_device *dev, int table, uint8_t *tbl,
 	size_t len);
 
+/* Send shading correction
+ *
+ * buf: shading buffer
+ * len: buffer size in bytes
+ */
+int send_shading(struct gl843_device *dev, uint16_t *buf, size_t len, int addr);
+
 int read_line(struct gl843_device *dev, uint8_t *buf, size_t len, int bpp,
 	unsigned int timeout);
 

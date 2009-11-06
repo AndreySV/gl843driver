@@ -350,6 +350,9 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 		ck3map = 0xfc00;	// 0b1111110000000000 (64512)
 		ck4map = 0x92a4;	// 0b1001001010100100 (37540)
 
+		ck1mtgl = 0;
+		ck3mtgl = 0;
+
 		cph = 1; cpl = 3;
 		rsh = 0; rsl = 2;
 
@@ -368,10 +371,13 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 		ck3map = 0xff00;	// 0b1111111100000000 (65280)
 		ck4map = 0x5492;	// 0b0101010010010010 (21650)
 
+		ck1mtgl = 0;
+		ck3mtgl = 0;
+
 		cph = 2; cpl = 4; rsh = 0; rsl = 2;
 
-		vsmp = 10; /*12?*/
-		rhi = 11; rlow = 13 /*14?*/; ghi = 0; glow = 3; bhi = 6; blow = 9;
+		vsmp = 10;
+		rhi = 11; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 9;
 
 	} else if (afe_dpi == 4800) {
 
@@ -382,6 +388,9 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 		ck1map = 0xffff;	// 0b1111111111111111 (65535)
 		ck3map = 0xffff;	// 0b1111111111111111 (65535)
 		ck4map = 0x5492;	// 0b0101010010010010 (21650)
+
+		ck1mtgl = 1;
+		ck3mtgl = 1;
 
 		cph = 10; cpl = 12; rsh = 8; rsl = 10;
 
@@ -423,8 +432,6 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 
 	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
 	use_gamma = (fmt != PXFMT_GRAY16 && fmt != PXFMT_RGB16);
-
-	//maxwd = width * dpi / afe_dpi;
 
 	DBG(DBG_info, "maxwd = %d, monochrome = %d, deep_color = %d, "
 		"use_gamma = %d, dpi = %d\n", maxwd, mono, deep_color,
