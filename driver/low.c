@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <string.h>
 #include <unistd.h>
 #include <libusb-1.0/libusb.h>
 #define GL843_PRIVATE
@@ -407,21 +408,30 @@ chk_failed:
  */
 int send_shading(struct gl843_device *dev, uint16_t *buf, size_t len, int addr)
 {
-	int ret, outlen;
+	const int BLKSIZE = 512;
+	int ret, n, outlen;
+	uint8_t p[BLKSIZE];
 
-	if (host_is_big_endian())
-		swap_buffer_endianness(buf, buf, len / 2);
+	/* Send 42 pixels (42 * 12 = 504 bytes) at a time, padded to 512 bytes.
+	 * The scanner ignores the last 8 bytes in every 512 byte block,
+	 * probably because they are less than a full pixel.
+	 */
+	n = len + (len / 504 + 1) * 8; /* Actual number of bytes to send */
 
 	CHK(write_reg(dev, GL843_RAMADDR, addr));
-	CHK(write_bulk_setup(dev, GL843__RAMWRDATA_, len, BULK_OUT));
-	CHK(usb_bulk_xfer(dev->usbdev, 2, (uint8_t *)buf, len, &outlen, 1000));
-	DBG(DBG_io, "writing %zu bytes, %d were sent.\n", len, outlen);
+	CHK(write_bulk_setup(dev, GL843__RAMWRDATA_, n, BULK_OUT));
 
+	DBG(DBG_io, "sending %zu + %zu bytes data + padding.\n", len, n - len);
+
+	for (; n > 0; n -= BLKSIZE) {
+		memcpy(p, buf, (len >= BLKSIZE) ? BLKSIZE : len);
+		CHK(usb_bulk_xfer(dev->usbdev, 2,
+			p, 512, &outlen, 10000));
+		buf += 504/2;
+		len -= 504;
+	}
 	ret = 0;
-
 chk_failed:
-	if (host_is_big_endian())
-		swap_buffer_endianness(buf, buf, len / 2);
 	return ret;
 }
 

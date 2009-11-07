@@ -449,46 +449,45 @@ int calculate_shading(struct gl843_device *dev,
 {
 	int ret, i;
 	struct gl843_image *light_img = NULL, *dark_img = NULL;
-	uint16_t *Ln, *Dn, *p;
-	const int target = 0x3fff;
+	uint16_t *Ln, *Dn, *p, *p_end;
+	const int target = 0xffff;
 	int div_by_zero = 0;
 	int gain_overflow = 0;
 
 	*buf = NULL;
+	*len = 0;
 	CHK_MEM(light_img = create_image(width, height, PXFMT_RGB16));
 	CHK_MEM(dark_img = create_image(width, height, PXFMT_RGB16));
-	*len = (light_img->stride+8000) * 2;
-	CHK_MEM(*buf = malloc(*len));
+
+	*len = width * 12; /* Shading data length */
+	CHK_MEM(*buf = calloc(*len, 1));
 
 	/* Scan light (white) pixels */
 
 	/* Assume lamp is on */
 	CHK(scan_img(dev, light_img, 10000));
-	//get_vertical_average(light_img);
+	get_vertical_average(light_img);
 	write_image("light.pnm", light_img);
 
 	/* Scan dark (black) pixels */
 
 	CHK(set_lamp(dev, LAMP_OFF, 0));
 	CHK(scan_img(dev, dark_img, 10000));
-	//get_vertical_average(dark_img);
+	get_vertical_average(dark_img);
 	write_image("dark.pnm", dark_img);
 
 	/* Calculate shading
 	 * Ref: shading & correction in GL843 datasheet. */
 
 	p = *buf;
+	p_end = p + *len;
 	Ln = (uint16_t *) light_img->data;
 	Dn = (uint16_t *) dark_img->data;
 
-	int x = 0;
-
-	printf("stride = %d, width = %d\n", light_img->stride, width);
-
-	for (i = 0; i < light_img->stride+1228*4; i += 2) {
+	for (i = 0; i < width * 3; i++) {
 		int diff, gain;
 
-		diff = *Ln - *Dn;
+		diff = *Ln++ - *Dn;
 		if (diff == 0) {
 			div_by_zero = 1;
 			diff = target;
@@ -499,21 +498,17 @@ int calculate_shading(struct gl843_device *dev,
 			gain = 0xffff;
 		}
 
+		*p++ = *Dn++;
+		*p++ = gain;
 
-		if (i < light_img->stride && x % 3 == 0) {
-			*p++ = *Dn;
-			*p++ = gain;
-		} else {
-			*p++ = 0;
-			*p++ = 0x1000;
+		if (p > p_end) {
+			DBG(DBG_error, "internal error: buffer overrun.");
+			break;
 		}
-
-		Ln++;
-		Dn++;
-		x++;
 	}
 
-	DBG(DBG_msg, "size = %d bytes\n", *len);
+	if (host_is_big_endian())
+		swap_buffer_endianness(*buf, *buf, *len / 2);
 
 	if (div_by_zero)
 		DBG(DBG_warn, "division by zero detected.\n");
@@ -539,7 +534,7 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 {
 	int ret;
 
-	int start_x = 46;
+	int start_x = 128;
 	int width = 10208;
 	int height = 10;
 	int dpi = 4800;
@@ -596,14 +591,9 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 
 	CHK(set_gain(dev, img));
 
-	CHK(calculate_shading(dev, width, height, 0x4000,
+	CHK(calculate_shading(dev, width, height, 0x2000,
 		&shading, &shading_len));
 	CHK(set_lamp(dev, LAMP_PLATEN, 4));
-
-	uint16_t *dmy = calloc(width*12,1);
-	if (dmy)
-		CHK(send_shading(dev, dmy, width*12, 0));
-	free(dmy);
 
 	if (shading)
 		CHK(send_shading(dev, shading, shading_len, 0));
@@ -625,6 +615,14 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 	CHK(write_regs(dev, postprocessing, ARRAY_SIZE(postprocessing)));
 
 	CHK(scan_img(dev, img, 10000));
+	int i;
+	for (i = 0; i < img->width*3; i++) {
+		if (((uint16_t*)img->data)[i] == 0) {
+			printf("black at = %d\n", i / 3);
+			break;
+		}
+	}
+
 	write_image("test.pnm", img);
 	destroy_image(img);
 
