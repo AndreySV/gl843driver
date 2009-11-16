@@ -284,9 +284,9 @@ static void get_vertical_average(struct gl843_image *img)
  * less than the 'high' register value. It is what comes
  * out of the scanner that counts.
  */
-int find_blacklevel(struct gl843_device *dev,
-		    struct gl843_image *img,
-		    uint8_t low, uint8_t high)
+int set_blacklevel(struct gl843_device *dev,
+		   struct gl843_image *img,
+		   uint8_t low, uint8_t high)
 {
 	int ret, i;
 	struct img_stat lo_stat, hi_stat;
@@ -393,6 +393,11 @@ int warm_up_lamp(struct gl843_device *dev,
 		} else if (n > 1) {
 			float p;
 
+			if (dL_start < dL) {
+				dL_start = dL;
+				dL_prev = dL;
+			}
+
 			p = get_progress(dL_start, dL_end, dL_prev, dL);
 
 			DBG(DBG_info, "L = %.2f, dL = %.2f\n", L, dL);
@@ -419,6 +424,7 @@ int set_gain(struct gl843_device *dev,
 	struct img_stat stat;
 	/* Target at 95% of max allows slight increase in lamp brightness. */
 	const float target = 65535 * 0.95;
+	int gain_overflow = 0;
 
 	DBG(DBG_msg, "Calibrating A/D-converter gain.\n");
 
@@ -435,7 +441,13 @@ int set_gain(struct gl843_device *dev,
 		if (stat.max[i] < 1)
 			stat.max[i] = 1;	/* avoid div-by-zero */
 		g[i] = g[i] * target / stat.max[i];
+		gain_overflow |= (g[i] > max_afe_gain());
 		CHK(write_afe_gain(dev, i, g[i]));
+	}
+
+	if (gain_overflow) {
+		DBG(DBG_warn, "The gain is too high, (R, G, B) = (%f, %f, %f). "
+			"Is the lamp on?\n", g[0], g[1], g[2]);
 	}
 
 	ret = 0;
@@ -453,6 +465,8 @@ int calculate_shading(struct gl843_device *dev,
 	const int target = 0xffff;
 	int div_by_zero = 0;
 	int gain_overflow = 0;
+
+	DBG(DBG_msg, "Calculating shading correction.\n");
 
 	*buf = NULL;
 	*len = 0;
