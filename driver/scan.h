@@ -14,7 +14,29 @@
 #ifndef _SCAN_H_
 #define _SCAN_H_
 
-int move_carriage(struct gl843_device *dev, float d);
+struct calibration_info
+{
+	/* Key */
+
+	enum gl843_lamp source;
+	float cal_y_pos;
+	int start_x;
+	int width;
+	int dpi;
+
+	/* Data */
+
+	uint8_t offset[3];	/* AFE offset register */
+	float gain[3];		/* AFE gain */
+	size_t sc_len;		/* Number of bytes in shading correction */
+	uint16_t sc[0];		/* Shading correction */
+
+	/* Used when calibrating */
+
+	int height;		/* Number of lines to scan */
+	uint16_t A;		/* Shading gain factor (0x2000 or 0x4000) */
+};
+
 int do_warmup_scan(struct gl843_device *dev, float y_pos);
 
 #endif /* _SCAN_H_ */

@@ -22,10 +22,11 @@
 #include "image.h"
 #include "motor.h"
 #include "util.h"
+#include "scan.h"
 
 /* Move the scanner carriage without scanning.
  *
- * This function move the scanner head to a calibration or
+ * This function moves the scanner head to a calibration or
  * lamp warmup position, or back home once completed.
  *
  * d: moving distance in inches. > 0: forward, < 0: back
@@ -180,8 +181,6 @@ static int __attribute__ ((pure)) gain_to_val(float g)
 
 static int write_afe_gain(struct gl843_device *dev, int i, float g)
 {
-	DBG(DBG_info, "%s gain = %.2f, val = %d\n",
-		idx_name(i), g, gain_to_val(g));
 	return write_afe(dev, 40 + i, gain_to_val(g));
 }
 
@@ -267,7 +266,7 @@ static void get_vertical_average(struct gl843_image *img)
 }
 
 /*
- * Adjust the AFE offset.
+ * Calculate and set the AFE offset.
  *
  * low:  known-good AFE offset-register value. See note.
  * high: known-good AFE offset-register value. See note. 
@@ -284,14 +283,17 @@ static void get_vertical_average(struct gl843_image *img)
  * less than the 'high' register value. It is what comes
  * out of the scanner that counts.
  */
-int set_blacklevel(struct gl843_device *dev,
-		   struct gl843_image *img,
-		   uint8_t low, uint8_t high)
+static int calc_afe_blacklevel(struct gl843_device *dev,
+			       struct calibration_info *cal,
+			       uint8_t low, uint8_t high)
 {
 	int ret, i;
+	struct gl843_image *img;
 	struct img_stat lo_stat, hi_stat;
 
 	DBG(DBG_msg, "Calibrating A/D-converter black level.\n");
+
+	CHK_MEM(img = create_image(cal->width, cal->height, PXFMT_RGB16));
 
 	/* Scan with the lamp off to produce black pixels. */
 	CHK(set_lamp(dev, LAMP_OFF, 0));
@@ -320,22 +322,22 @@ int set_blacklevel(struct gl843_device *dev,
 		int o;	/* offset */
 		m = (hi_stat.avg[i] - lo_stat.avg[i]) / (high - low);
 		c = lo_stat.avg[i] - m * low;
-		/* TODO: range checking */
-		o = (int) (-c / m + 0.5);
+		o = (int) satf(-c / m + 0.5, 0, 255);
+		cal->offset[i] = o;
 		CHK(write_afe(dev, 32 + i, o));
 		DBG(DBG_info, "AFE %s offset = %d\n", idx_name(i), o);
 	}
 
-	/* Debug: Test the result: */
-	CHK(scan_img(dev, img, 10000));
-	get_image_stats(img, &lo_stat);
-
 	ret = 0;
 chk_failed:
+	free(img);
 	return ret;	
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;
 }
 
-/* Get progress, in percent, of lamp warmup */
+/* Get lamp-warmup progress, in percent. */
 static float get_progress(float dL_start, float dL_end, float dL_prev, float dL)
 {
 	float span, progress, prev_progress;
@@ -354,13 +356,14 @@ static float get_progress(float dL_start, float dL_end, float dL_prev, float dL)
 }
 
 /* Wait until the lamp has warmed up.
- * Note: Don't forget to turn it on first ...
+ * Note: Don't forget to turn it on first.
  */
 int warm_up_lamp(struct gl843_device *dev,
-		 struct gl843_image *img)
+		 struct calibration_info *cal)
 {
 	int ret, i;
 	int n;			/* Number of scans */
+	struct gl843_image *img;
 	struct img_stat s;
 
 	float L = 0, L_prev;	/* Lamp intensity */
@@ -369,6 +372,8 @@ int warm_up_lamp(struct gl843_device *dev,
 	float dL_end = 50;	/* Target intensity delta */
 
 	DBG(DBG_msg, "Warming up lamp.\n");
+
+	CHK_MEM(img = create_image(cal->width, cal->height, PXFMT_RGB16));
 
 	for (i = 0; i < 3; i++)
 		CHK(write_afe_gain(dev, i, min_afe_gain()));
@@ -400,7 +405,7 @@ int warm_up_lamp(struct gl843_device *dev,
 
 			p = get_progress(dL_start, dL_end, dL_prev, dL);
 
-			DBG(DBG_info, "L = %.2f, dL = %.2f\n", L, dL);
+			DBG(DBG_info, "  L = %.2f, dL = %.2f\n", L, dL);
 			DBG(DBG_msg, "  progress: %.0f%%\n", p);
 
 			/* The lamp is warm when dL is small enough */
@@ -412,21 +417,28 @@ int warm_up_lamp(struct gl843_device *dev,
 	}
 	ret = 0;
 chk_failed:
+	free(img);
 	return ret;	
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;
 }
 
-/* Adjust the AFE gain */
-int set_gain(struct gl843_device *dev,
-	     struct gl843_image *img)
+/* Calculate the AFE gain */
+static int calc_afe_gain(struct gl843_device *dev,
+			 struct calibration_info *cal)
 {
 	int ret, i;
 	float g[3];
+	struct gl843_image *img;
 	struct img_stat stat;
-	/* Target at 95% of max allows slight increase in lamp brightness. */
+	/* Target at 95% of max allows lamp brightness increase after warmup. */
 	const float target = 65535 * 0.95;
 	int gain_overflow = 0;
 
 	DBG(DBG_msg, "Calibrating A/D-converter gain.\n");
+
+	CHK_MEM(img = create_image(cal->width, cal->height, PXFMT_RGB16));
 
 	/* Scan at minimum gain */
 	for (i = 0; i < 3; i++) {
@@ -442,22 +454,28 @@ int set_gain(struct gl843_device *dev,
 			stat.max[i] = 1;	/* avoid div-by-zero */
 		g[i] = g[i] * target / stat.max[i];
 		gain_overflow |= (g[i] > max_afe_gain());
+		cal->gain[i] = g[i];
+		DBG(DBG_info, "%s gain = %.2f, val = %d\n",
+			idx_name(i), g[i], gain_to_val(g[i]));
 		CHK(write_afe_gain(dev, i, g[i]));
 	}
 
 	if (gain_overflow) {
-		DBG(DBG_warn, "The gain is too high, (R, G, B) = (%f, %f, %f). "
+		DBG(DBG_warn, "Gain is too high, (R, G, B) = (%f, %f, %f). "
 			"Is the lamp on?\n", g[0], g[1], g[2]);
 	}
 
 	ret = 0;
 chk_failed:
+	free(img);
 	return ret;	
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;
 }
 
-int calculate_shading(struct gl843_device *dev,
-		      int width, int height, uint16_t A,
-		      uint16_t **buf, size_t *len)
+static int calc_shading(struct gl843_device *dev,
+			struct calibration_info *cal)
 {
 	int ret, i;
 	struct gl843_image *light_img = NULL, *dark_img = NULL;
@@ -468,37 +486,30 @@ int calculate_shading(struct gl843_device *dev,
 
 	DBG(DBG_msg, "Calculating shading correction.\n");
 
-	*buf = NULL;
-	*len = 0;
-	CHK_MEM(light_img = create_image(width, height, PXFMT_RGB16));
-	CHK_MEM(dark_img = create_image(width, height, PXFMT_RGB16));
-
-	*len = width * 12; /* Shading data length */
-	CHK_MEM(*buf = calloc(*len, 1));
+	CHK_MEM(light_img = create_image(cal->width, cal->height, PXFMT_RGB16));
+	CHK_MEM(dark_img = create_image(cal->width, cal->height, PXFMT_RGB16));
 
 	/* Scan light (white) pixels */
 
 	/* Assume lamp is on */
 	CHK(scan_img(dev, light_img, 10000));
 	get_vertical_average(light_img);
-	write_image("light.pnm", light_img);
 
 	/* Scan dark (black) pixels */
 
 	CHK(set_lamp(dev, LAMP_OFF, 0));
 	CHK(scan_img(dev, dark_img, 10000));
 	get_vertical_average(dark_img);
-	write_image("dark.pnm", dark_img);
 
 	/* Calculate shading
 	 * Ref: shading & correction in GL843 datasheet. */
 
-	p = *buf;
-	p_end = p + *len;
+	p = cal->sc;
+	p_end = p + cal->sc_len;
 	Ln = (uint16_t *) light_img->data;
 	Dn = (uint16_t *) dark_img->data;
 
-	for (i = 0; i < width * 3; i++) {
+	for (i = 0; i < cal->width * 3; i++) {
 		int diff, gain;
 
 		diff = *Ln++ - *Dn;
@@ -506,7 +517,7 @@ int calculate_shading(struct gl843_device *dev,
 			div_by_zero = 1;
 			diff = target;
 		}
-		gain = (A * target) / diff;
+		gain = (cal->A * target) / diff;
 		if (gain > 0xffff) {
 			gain_overflow = 1;
 			gain = 0xffff;
@@ -522,56 +533,73 @@ int calculate_shading(struct gl843_device *dev,
 	}
 
 	if (host_is_big_endian())
-		swap_buffer_endianness(*buf, *buf, *len / 2);
+		swap_buffer_endianness(cal->sc, cal->sc, cal->sc_len / 2);
 
 	if (div_by_zero)
 		DBG(DBG_warn, "division by zero detected.\n");
 	if (gain_overflow)
 		DBG(DBG_warn, "gain overflow detected.\n");
 
-	free(light_img);
-	free(dark_img);
-	return 0;
-
-chk_mem_failed:
-	ret = LIBUSB_ERROR_NO_MEM;
+	ret = 0;
 chk_failed:
 	free(light_img);
 	free(dark_img);
-	free(*buf);
-	*buf = NULL;
-	*len = 0;
 	return ret;
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;
 }
 
-int do_warmup_scan(struct gl843_device *dev, float y_pos)
+struct calibration_info *create_calinfo(enum gl843_lamp source,
+					float cal_y_pos,
+					int start_x,
+					int width,
+					int height,
+					int dpi)
+{
+	struct calibration_info *cal;
+	int sc_len = width * 12;
+
+	CHK_MEM(cal = calloc(sizeof(*cal) + sc_len, 1));
+	cal->source = source;
+	cal->cal_y_pos = cal_y_pos;
+	cal->width = width;
+	cal->start_x = start_x;
+	cal->height = height;
+	cal->dpi = dpi;
+	cal->sc_len = sc_len;
+	cal->A = 0x2000;
+
+chk_mem_failed:
+	return cal;
+}
+
+int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 {
 	int ret;
 
+	enum gl843_lamp lamp = LAMP_PLATEN;
+	int lamp_to = 4;
 	int start_x = 128;
 	int width = 10208;
-	int height = 10;
+	int height = 16;
 	int dpi = 4800;
 
-	enum gl843_pixformat fmt = PXFMT_RGB16;
-	struct gl843_image *img;
+	struct calibration_info *cal;
 
-	uint16_t *shading = NULL;
-	size_t shading_len;
-
-	img = create_image(width, height, fmt);
+	CHK_MEM(cal = create_calinfo(lamp, cal_y_pos, start_x, width, height, dpi));
 
 	CHK(write_reg(dev, GL843_SCANRESET, 1));
 	while(!read_reg(dev, GL843_HOMESNR))
 		usleep(10000);
 	CHK(do_base_configuration(dev));
 
-	CHK(move_carriage(dev, y_pos));
+	CHK(move_carriage(dev, cal_y_pos));
 	while (read_reg(dev, GL843_MOTORENB))
 		usleep(10000);
 
 	CHK(setup_ccd_and_afe(dev,
-			/* fmt */ fmt,
+			/* fmt */ PXFMT_RGB16,
 			/* start_x */ start_x,
 			/* width */ width * 4800 / dpi,
 			/* dpi */ dpi,
@@ -592,26 +620,18 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 	CHK(flush_regs(dev));
 
 	CHK(write_afe(dev, 4, 0));
-
 	CHK(write_afe(dev, 1, 0x23));
 	CHK(write_afe(dev, 2, 0x24));
 	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
 
 	CHK(set_lamp(dev, LAMP_OFF, 0));
-	CHK(find_blacklevel(dev, img, 75, 0));
-	CHK(set_lamp(dev, LAMP_PLATEN, 4));
-
-	CHK(warm_up_lamp(dev, img));
-
-	CHK(set_gain(dev, img));
-
-	CHK(calculate_shading(dev, width, height, 0x2000,
-		&shading, &shading_len));
-	CHK(set_lamp(dev, LAMP_PLATEN, 4));
-
-	if (shading)
-		CHK(send_shading(dev, shading, shading_len, 0));
-	free(shading);
+	CHK(calc_afe_blacklevel(dev, cal, 75, 0));
+	CHK(set_lamp(dev, lamp, lamp_to));
+	CHK(warm_up_lamp(dev, cal));
+	CHK(calc_afe_gain(dev, cal));
+	CHK(calc_shading(dev, cal));
+	CHK(set_lamp(dev, lamp, lamp_to));
+	CHK(send_shading(dev, cal->sc, cal->sc_len, 0));
 
 	int dvdset = 1, shdarea = 1, aveenb = 1;
 
@@ -628,25 +648,18 @@ int do_warmup_scan(struct gl843_device *dev, float y_pos)
 	};
 	CHK(write_regs(dev, postprocessing, ARRAY_SIZE(postprocessing)));
 
-	CHK(scan_img(dev, img, 10000));
-	int i;
-	for (i = 0; i < img->width*3; i++) {
-		if (((uint16_t*)img->data)[i] == 0) {
-			printf("black at = %d\n", i / 3);
-			break;
-		}
-	}
-
-	write_image("test.pnm", img);
-	destroy_image(img);
-
-	CHK(move_carriage(dev, -y_pos));
+	CHK(move_carriage(dev, -cal_y_pos));
 	while (!read_reg(dev, GL843_HOMESNR))
 		usleep(10000);
 	CHK(write_reg(dev, GL843_MTRPWR, 0));
 
+	free(cal);
+
 	ret = 0;
 chk_failed:
 	return ret;
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;	
 }
 
