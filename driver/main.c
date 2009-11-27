@@ -14,8 +14,15 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
 #include <sane/sane.h>
 #include <sane/saneopts.h>
+
+#include "util.h"
+#include "low.h"
+#include "cs4400f.h"
 
 enum scanner_state
 {
@@ -68,18 +75,29 @@ enum CS4400F_Option
 #define SANE_VALUE_SCAN_SOURCE_PLATEN	SANE_I18N("Flatbed")
 #define SANE_VALUE_SCAN_SOURCE_TA	SANE_I18N("Transparency Adapter")
 
+const SANE_Int cs4400f_sources[] = { 2, LAMP_PLATEN, LAMP_TA };
+const SANE_String_Const cs4400f_source_names[] = {
+	SANE_VALUE_SCAN_SOURCE_PLATEN, SANE_VALUE_SCAN_SOURCE_TA, NULL };
+const SANE_Int cs4400f_modes[] = { 2, SANE_FRAME_GRAY, SANE_FRAME_RGB };
+const SANE_String_Const cs4400f_mode_names[] = {
+	SANE_VALUE_SCAN_MODE_GRAY, SANE_VALUE_SCAN_MODE_COLOR, NULL };
+const SANE_Int cs4400f_bit_depths[]  = { 2, 8, 16 };
+const SANE_Int cs4400f_resolutions[] = { 5, 75, 150, 300, 600, 1200 };
+const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
+const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
+const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
+const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
+const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
+const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
+
 typedef struct CS4400F_Scanner
 {
 	SANE_Option_Descriptor opt[OPT_NUM_OPTIONS];
 
 	/* Lamp settings */
 
-	const SANE_Int sources[] = { 2, LAMP_PLATEN, LAMP_TA };
- 	SANE_String_Const source_names = {
-		SANE_VALUE_SCAN_SOURCE_PLATEN,
-		SANE_VALUE_SCAN_SOURCE_TA,
-		NULL
-	};
+	const SANE_Int *sources;
+ 	const SANE_String_Const *source_names;
 	enum gl843_lamp source;	/* Light source */
 	SANE_Range lamp_to_lim;	/* Timeout limit */
 	SANE_Int lamp_timeout;	/* Lamp timeout [minutes] */
@@ -105,18 +123,18 @@ typedef struct CS4400F_Scanner
 	SANE_Fixed br_x;	/* Current scan area right edge [mm] */
 	SANE_Fixed br_y;	/* Current scan area bottom edge [mm] */
 
-	const SANE_Int modes[] = { 2, SANE_FRAME_GRAY, SANE_FRAME_RGB };
-	const SANE_String mode_names[] = {
-		SANE_VALUE_SCAN_MODE_GRAY,
-		SANE_VALUE_SCAN_MODE_COLOR,
-		NULL
-	};
+	/* Current image format */
+
+	const SANE_Int *modes;
+	const SANE_String_Const *mode_names;
 	SANE_Frame mode;	/* Color mode */
-	const SANE_Int bit_depths[] = { 2, 8, 16 };
+	const SANE_Int *bit_depths;
 	SANE_Int depth;		/* Bits per channel */
-	const SANE_Int resolutions[] = { 5, 75, 150, 300, 600, 1200 };
+	const SANE_Int *resolutions;
 	SANE_Int x_dpi;		/* Horizontal resolution [dots per inch] */
 	SANE_Int y_dpi;		/* Vertical resolution [dots per inch] */
+
+	/* Gamma correction tables */
 
 	SANE_Bool use_gamma;	/* Gamma correction enabled */
 	SANE_Range gamma_range;
@@ -127,8 +145,12 @@ typedef struct CS4400F_Scanner
 	SANE_Word *blue_gamma;
 
 	SANE_Range bw_range;
-	SANE_Fix bw_threshold;	/* Black/white threshold [percent] */
-	SANE_Fix bw_hysteresis;	/* Threshold hysteresis [percent] */
+	SANE_Fixed bw_threshold;	/* Black/white threshold [percent] */
+	SANE_Fixed bw_hysteresis;	/* Threshold hysteresis [percent] */
+
+	/* Scanner state */
+
+	SANE_Bool is_scanning;
 #if 0
 	struct gl843_device *hw;
 	enum scanner_state state;
@@ -149,6 +171,7 @@ static SANE_Word *create_gamma(int N, float gamma)
 
 	for (k = 0; k < N; k++) {
 		g[k] = (uint16_t) (65535 * powf((float)k / N, 1/gamma) + 0.5);
+	}
 	return g;
 }
 
@@ -167,18 +190,30 @@ static void cleanup_options(CS4400F_Scanner *s)
 SANE_Status CS4400F_setup(CS4400F_Scanner *s)
 {
 	const int gamma_len = 256;
-	float def_gamma = 1.0;
+	float default_gamma = 1.0;
 
+	/* Scanner-specific settings */
+
+	s->sources      = cs4400f_sources;
+	s->source_names = cs4400f_source_names;
+	s->modes        = cs4400f_modes;
+	s->mode_names   = cs4400f_mode_names;
+	s->bit_depths   = cs4400f_bit_depths;
+	s->resolutions  = cs4400f_resolutions;
+
+	s->x_limit      = cs4400f_x_limit;
+	s->y_limit      = cs4400f_y_limit;
+	s->y_calpos     = cs4400f_y_calpos;
+
+	s->x_limit_ta   = cs4400f_x_limit_ta;
+	s->y_limit_ta   = cs4400f_y_limit_ta;
+	s->y_calpos_ta  = cs4400f_y_calpos_ta;
+
+	/* Generic settings */
+
+	s->source = LAMP_PLATEN;
 	s->lamp_to_lim = (SANE_Range){ 0, 15, 0 };
 	s->lamp_timeout = 4;
-
-	s->x_limit     = (SANE_Range){ SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-	s->y_limit     = (SANE_Range){ SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-	s->y_calpos    = SANE_FIX(5.0);
-
-	s->x_limit_ta  = (SANE_Range){ SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-	s->y_limit_ta  = (SANE_Range){ SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-	s->y_calpos_ta = SANE_FIX(5.0);
 
 	s->x_scan_lim.min = SANE_FIX(0.0);
 	s->x_scan_lim.max = s->x_limit.max - s->x_limit.min,
@@ -211,14 +246,16 @@ SANE_Status CS4400F_setup(CS4400F_Scanner *s)
 	s->bw_threshold = SANE_FIX(50.0);
 	s->bw_hysteresis = SANE_FIX(0.0);
 
+	s->is_scanning = SANE_FALSE;
+
 	return SANE_STATUS_GOOD;
 
 chk_mem_failed:
 	cleanup_options(s);
-	return SANE_STATUS_NOMEM;
+	return SANE_STATUS_NO_MEM;
 }
 
-static size_t max_string_size(static SANE_String_Const strings[])
+static size_t max_string_size(const SANE_String_Const *strings)
 {
 	size_t size, max_size = 0;
 
@@ -236,7 +273,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	SANE_Option_Descriptor *opt;
 
 	for (i = 0; i < OPT_NUM_OPTIONS; i++)
-		s->opt[i] = SANE_SOFT_SELECT | SANE_CAP_SOFT_DETECT;
+		s->opt[i].cap = SANE_CAP_SOFT_SELECT | SANE_CAP_SOFT_DETECT;
 
 	/* Number of options */
 
@@ -267,7 +304,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->title = SANE_TITLE_SCAN_MODE;
 	opt->desc = SANE_DESC_SCAN_MODE;
 	opt->type = SANE_TYPE_STRING;
-	opt->size = max_string_size(mode_names);
+	opt->size = max_string_size(s->mode_names);
 	opt->cap |= 0;
 	opt->constraint_type = SANE_CONSTRAINT_STRING_LIST;
 	opt->constraint.string_list = s->mode_names;
@@ -280,7 +317,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->title = SANE_TITLE_SCAN_SOURCE;
 	opt->desc = SANE_DESC_SCAN_SOURCE;
 	opt->type = SANE_TYPE_STRING;
-	opt->size = max_string_size(source_names);
+	opt->size = max_string_size(s->source_names);
 	opt->cap |= 0;
 	opt->constraint_type = SANE_CONSTRAINT_STRING_LIST;
 	opt->constraint.string_list = s->source_names;
@@ -336,7 +373,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->cap |= 0;
 	opt->unit = SANE_UNIT_MM;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->x_limit;
+	opt->constraint.range = &s->x_limit;
 
 	/* top */
 
@@ -350,7 +387,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->size = sizeof(SANE_Fixed);
 	opt->cap |= 0;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->y_limit;
+	opt->constraint.range = &s->y_limit;
 
 	/* right */
 
@@ -364,7 +401,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->size = sizeof(SANE_Fixed);
 	opt->cap |= 0;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->x_limit;
+	opt->constraint.range = &s->x_limit;
 
 	/* bottom */
 
@@ -378,7 +415,7 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->size = sizeof(SANE_Fixed);
 	opt->cap |= 0;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->y_limit;
+	opt->constraint.range = &s->y_limit;
 
 	/* Enhancement options */
 
@@ -410,10 +447,10 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->desc = SANE_DESC_GAMMA_VECTOR;
 	opt->type = SANE_TYPE_INT;
 	opt->unit = SANE_UNIT_NONE;
-	opt->size = GAMMA_LEN * sizeof(SANE_Word);
-	opt->cap |= SANE_CAL_INACTIVATE | SANE_CAP_ADVANCED;
+	opt->size = s->gamma_len * sizeof(SANE_Word);
+	opt->cap |= SANE_CAP_INACTIVE | SANE_CAP_ADVANCED;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->gamma_range;
+	opt->constraint.range = &s->gamma_range;
 
 	/* red gamma vector */
 
@@ -424,10 +461,10 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->desc = SANE_DESC_GAMMA_VECTOR_R;
 	opt->type = SANE_TYPE_INT;
 	opt->unit = SANE_UNIT_NONE;
-	opt->size = GAMMA_LEN * sizeof(SANE_Word);
-	opt->cap |= SANE_CAL_INACTIVATE | SANE_CAP_ADVANCED;
+	opt->size = s->gamma_len * sizeof(SANE_Word);
+	opt->cap |= SANE_CAP_INACTIVE | SANE_CAP_ADVANCED;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->gamma_range;
+	opt->constraint.range = &s->gamma_range;
 
 	/* green gamma vector */
 
@@ -438,10 +475,10 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->desc = SANE_DESC_GAMMA_VECTOR_G;
 	opt->type = SANE_TYPE_INT;
 	opt->unit = SANE_UNIT_NONE;
-	opt->size = GAMMA_LEN * sizeof(SANE_Word);
-	opt->cap |= SANE_CAL_INACTIVATE | SANE_CAP_ADVANCED;
+	opt->size = s->gamma_len * sizeof(SANE_Word);
+	opt->cap |= SANE_CAP_INACTIVE | SANE_CAP_ADVANCED;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->gamma_range;
+	opt->constraint.range = &s->gamma_range;
 
 	/* blue gamma vector */
 
@@ -451,11 +488,11 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	opt->title = SANE_TITLE_GAMMA_VECTOR_B;
 	opt->desc = SANE_DESC_GAMMA_VECTOR_B;
 	opt->type = SANE_TYPE_INT;
-	opt->size = GAMMA_LEN * sizeof(SANE_Word);
-	opt->cap |= SANE_CAL_INACTIVATE | SANE_CAP_ADVANCED;
+	opt->size = s->gamma_len * sizeof(SANE_Word);
+	opt->cap |= SANE_CAP_INACTIVE | SANE_CAP_ADVANCED;
 	opt->unit = SANE_UNIT_NONE;
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
-	opt->constraint.range = s->gamma_range;
+	opt->constraint.range = &s->gamma_range;
 
 	return SANE_STATUS_GOOD;
 }
@@ -471,7 +508,7 @@ void sane_exit()
 }
 
 /* Get index of constraint s in string list */
-static int find_constraint_string(SANE_string *s, SANE_String *strings)
+static int find_constraint_string(SANE_String s, const SANE_String_Const *strings)
 {
 	int i;
 	for (i = 0; *strings != NULL; strings++) {
@@ -483,7 +520,7 @@ static int find_constraint_string(SANE_string *s, SANE_String *strings)
 }
 
 /* Get index of constraint v in word array */
-static int find_constraint_value(SANE_Word v, SANE_Word *values)
+static int find_constraint_value(SANE_Word v, const SANE_Word *values)
 {
 	int i, N;
 	N = *values++;
@@ -609,6 +646,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 
 	case SANE_ACTION_SET_VALUE:
 	{
+		SANE_Status ret;
+
 		if (value == NULL)
 			return SANE_STATUS_INVAL;
 
@@ -661,7 +700,7 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			break;
 		case OPT_CUSTOM_GAMMA:
 			if (val->w != s->use_gamma)
-				flags |= SANE_INFO_RELOAD_OPTS;
+				flags |= SANE_INFO_RELOAD_OPTIONS;
 
 			s->use_gamma = val->w;
 
