@@ -22,16 +22,17 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <libusb-1.0/libusb.h>
+#include <sane/sane.h>
 #include "util.h"
 
 char *g_backend;
-int g_level = 0;
+int g_dbg_level = 0;
 
 void vprintf_dbg(int level, const char *func, int line, const char *msg, ...)
 {
 	va_list ap;
 
-	if (level > g_level)
+	if (level > g_dbg_level)
 		return;
 	if (line)
 		fprintf(stderr, "[%d] %s %s:%d: ", level, g_backend, func, line);
@@ -60,12 +61,12 @@ void init_debug(const char *backend, int level)
 		s = getenv(buf);
 		free(buf);
 		if (s)
-			g_level = atoi(s);
+			g_dbg_level = atoi(s);
 	} else {
-		g_level = level;
+		g_dbg_level = level;
 	}
 
-	DBG (0, "setting debug level of %s to %d.\n", backend, g_level);
+	DBG (0, "setting debug level of %s to %d.\n", backend, g_dbg_level);
 }
 
 void init_timer(struct dbg_timer *timer, clockid_t clk_id)
@@ -132,6 +133,27 @@ void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len)
 	for (i = 0; i < len; i++) {
 		dst[i] = ((src[i] >> 8) & 0xff) | ((src[i] & 0xff) << 8);
 	}
+}
+
+/* Convert millimeters to pixels. */
+int mm_to_px(float start, float end, int dpi, int *offset)
+{
+	int size;
+
+	size = (end - start) / 25.4 * dpi;
+	if (offset)
+		*offset = start / 25.4 * dpi;
+	return size;
+}
+
+/* Saturate value v */
+float __attribute__ ((pure)) satf(float v, float min, float max)
+{
+	if (v < min)
+		v = min;
+	else if (v > max)
+		v = max;
+	return v;
 }
 
 const char *sanei_libusb_strerror(int errcode)

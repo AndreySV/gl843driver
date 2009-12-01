@@ -89,7 +89,7 @@ int write_afe(struct gl843_device *dev, int reg, int val);
  * tbl:   data
  * len:   number of entries (typically 1020)
  */
-int send_motor_table(struct gl843_device *dev, int table, uint16_t *tbl,
+int send_motor_accel(struct gl843_device *dev, int table, uint16_t *tbl,
 	size_t len);
 
 /* Send gamma correction table.

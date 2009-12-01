@@ -17,12 +17,82 @@
 #include <stdint.h>
 #include <errno.h>
 #include <math.h>
+#include <string.h>
 #include "low.h"
 #include "cs4400f.h"
-#include "image.h"
-#include "motor.h"
 #include "util.h"
 #include "scan.h"
+
+struct gl843_image *create_image(int width, int height,
+				 enum gl843_pixformat fmt)
+{
+	int bpp = fmt; /* fmt is enumerated as bits per pixel */
+	int stride = ALIGN(bpp * width, 8) / 8;
+	struct gl843_image *img;
+
+	img = malloc(sizeof(*img) + stride * height);
+	img->bpp = fmt;
+	img->width = width;
+	img->height = height;
+	img->stride = stride;
+	img->len = img->stride * img->height;
+	return img;
+}
+
+void write_pnm_image(const char *filename, struct gl843_image *img)
+{
+	int do_swap;
+	enum gl843_pixformat fmt = img->bpp;
+
+	if (fmt == PXFMT_UNDEFINED) {
+		DBG(DBG_error0, "Undefined pixel format\n");
+		return;
+	}
+	FILE *file = fopen(filename, "w");
+	if (!file) {
+		DBG(DBG_error0, "Cannot open image file %s for writing: %s\n",
+			filename, strerror(errno));
+		return;
+	}
+
+	switch(fmt) {
+	case PXFMT_LINEART:
+		fprintf(file, "P4\n%d %d\n", img->width, img->height);
+		break;
+	case PXFMT_GRAY8:
+		fprintf(file, "P5\n%d %d\n255\n", img->width, img->height);
+		break;
+	case PXFMT_GRAY16:
+		fprintf(file, "P5\n%d %d\n65535\n", img->width, img->height);
+		break;
+	case PXFMT_RGB8:
+		fprintf(file, "P6\n%d %d\n255\n", img->width, img->height);
+		break;
+	case PXFMT_RGB16:
+		fprintf(file, "P6\n%d %d\n65535\n", img->width, img->height);
+		break;
+	default:
+		break;
+	}
+
+	do_swap = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16)
+		&& host_is_little_endian();
+
+	if (do_swap) {
+		swap_buffer_endianness((uint16_t *)img->data,
+			(uint16_t *)img->data, img->len / 2);
+	}
+
+	if (fwrite(img->data, img->len, 1, file) != 1) {
+		DBG(DBG_error0, "Error writing %s: %s\n",
+			filename, strerror(errno));
+	}
+
+	if (do_swap) {
+		swap_buffer_endianness((uint16_t *)img->data,
+			(uint16_t *)img->data, img->len / 2);
+	}
+}
 
 /* Move the scanner carriage without scanning.
  *
@@ -36,7 +106,7 @@ static int move_carriage(struct gl843_device *dev, float d)
 {
 	int ret;
 	int feedl;
-	struct gl843_motor_setting move;
+	struct motor_accel move;
 
 	feedl = (int)(4800 * d + 0.5);
 	if (feedl >= 0) {
@@ -46,7 +116,7 @@ static int move_carriage(struct gl843_device *dev, float d)
 		feedl = -feedl;
 	}
 
-	cs4400f_build_motor_table(&move, 240, HALF_STEP);
+	build_accel_profile(&move, 24576, 240, 1.5);
 
 	/* Subtract acceleration and deceleration distances */
 	feedl = feedl - 2 * move.alen;
@@ -64,7 +134,7 @@ static int move_carriage(struct gl843_device *dev, float d)
 		{ GL843_MULSTOP, 0 },
 		{ GL843_STOPTIM, 0 },
 		/* Scanning (table 1 and 3)*/
-		{ GL843_STEPSEL, move.type },
+		{ GL843_STEPSEL, HALF_STEP },
 		{ GL843_STEPNO, 1 },
 		{ GL843_FSHDEC, 1 },
 		{ GL843_VRSCAN, 3 },	// FIXME: Not hard coded ...
@@ -72,7 +142,7 @@ static int move_carriage(struct gl843_device *dev, float d)
 		{ GL843_FASTNO, 1 },
 		{ GL843_VRBACK, 3 },	// FIXME: Not hard coded ...
 		/* Fast feeding (table 4) and go-home (table 5) */
-		{ GL843_FSTPSEL, move.type },
+		{ GL843_FSTPSEL, HALF_STEP },
 		{ GL843_FMOVNO, move.alen >> STEPTIM },
 		{ GL843_FMOVDEC, move.alen >> STEPTIM },
 		{ GL843_DECSEL, 1 }, /* Windows driver: 0 or 1 */
@@ -90,11 +160,11 @@ static int move_carriage(struct gl843_device *dev, float d)
 	};
 	CHK(write_regs(dev, motor1, ARRAY_SIZE(motor1)));
 
-	send_motor_table(dev, 1, move.a, 1020);
-	send_motor_table(dev, 2, move.a, 1020);
-	send_motor_table(dev, 3, move.a, 1020);
-	send_motor_table(dev, 4, move.a, 1020);
-	send_motor_table(dev, 5, move.a, 1020);
+	send_motor_accel(dev, 1, move.a, 1020);
+	send_motor_accel(dev, 2, move.a, 1020);
+	send_motor_accel(dev, 3, move.a, 1020);
+	send_motor_accel(dev, 4, move.a, 1020);
+	send_motor_accel(dev, 5, move.a, 1020);
 
 	set_reg(dev, GL843_NOTHOME, 0);
 	set_reg(dev, GL843_AGOHOME, 1);
@@ -148,40 +218,6 @@ static const char *__attribute__ ((pure)) idx_name(int i)
 	default:
 		return "(unknown)";
 	}
-}
-
-/* Saturate value v */
-static float __attribute__ ((pure)) satf(float v, float min, float max)
-{
-	if (v < min)
-		v = min;
-	else if (v > max)
-		v = max;
-	return v;
-}
-
-/* AFE-specific, maximum gain as per the data sheet */
-float __attribute__ ((pure)) max_afe_gain()
-{
-	return 7.428;
-}
-
-/* AFE-specific, minimum gain as per the data sheet */
-float __attribute__ ((pure)) min_afe_gain()
-{
-	return 0.735;
-}
-
-/* AFE-specific: convert AFE gain to AFE register value. */
-static int __attribute__ ((pure)) gain_to_val(float g)
-{
-	g = satf(g, min_afe_gain(), max_afe_gain());
-	return (int) (283 - 208/g + 0.5);
-}
-
-static int write_afe_gain(struct gl843_device *dev, int i, float g)
-{
-	return write_afe(dev, 40 + i, gain_to_val(g));
 }
 
 struct img_stat
@@ -456,7 +492,7 @@ static int calc_afe_gain(struct gl843_device *dev,
 		gain_overflow |= (g[i] > max_afe_gain());
 		cal->gain[i] = g[i];
 		DBG(DBG_info, "%s gain = %.2f, val = %d\n",
-			idx_name(i), g[i], gain_to_val(g[i]));
+			idx_name(i), g[i], afe_gain_to_val(g[i]));
 		CHK(write_afe_gain(dev, i, g[i]));
 	}
 
@@ -661,5 +697,72 @@ chk_failed:
 chk_mem_failed:
 	ret = LIBUSB_ERROR_NO_MEM;
 	goto chk_failed;	
+}
+
+int do_move(struct gl843_device *dev)
+{
+	int ret = 0;
+	int moving = 1;
+	write_reg(dev, GL843_MOVE, 255);
+	while (moving) {
+		CHK(read_regs(dev, GL843_MOTORENB, GL843_FEDCNT, -1));
+		moving = get_reg(dev, GL843_MOTORENB);
+		printf("\rfedcnt = %d        ", get_reg(dev, GL843_FEDCNT));
+		usleep(1000);
+	}
+	printf("\n");
+chk_failed:
+	return ret;
+}
+
+/* Use this function to explore the motor settings of your scanner. */
+int do_move_test(struct gl843_device *dev, int speed, enum motor_steptype step)
+{
+	int ret = 0;
+	struct dbg_timer tmr;
+	struct motor_accel m;
+
+	init_timer(&tmr, CLOCK_REALTIME);
+
+	build_accel_profile(&m, 25476, 275, 1.5);
+	CHK(send_motor_accel(dev, 1, m.a, 1020));
+	CHK(write_reg(dev, GL843_CLRMCNT, 1));	/* Clear FEDCNT */
+
+	/* Move forward (defined by FEEDL below) */
+
+	set_reg(dev, GL843_STEPNO, m.alen >> STEPTIM);
+	set_reg(dev, GL843_STEPTIM, STEPTIM);
+	set_reg(dev, GL843_VRMOVE, 5);
+
+	set_reg(dev, GL843_FEEDL, 500);
+	set_reg(dev, GL843_STEPSEL, step);
+
+	set_reg(dev, GL843_MTRREV, 0);
+	set_reg(dev, GL843_MTRPWR, 1);
+	CHK(flush_regs(dev));
+
+	CHK(do_move(dev));
+
+#define RESTORE_MOTOR_POS
+#ifdef RESTORE_MOTOR_POS
+	/* Back up again */
+	set_reg(dev, GL843_FEEDL, 500);
+	set_reg(dev, GL843_MTRREV, 1);
+	CHK(flush_regs(dev));
+	CHK(do_move(dev));
+	printf("\n");
+#endif
+	set_reg(dev, GL843_MTRPWR, 0);
+	set_reg(dev, GL843_FULLSTP, 1);
+	CHK(flush_regs(dev));
+
+	printf("elapsed time: %f [ms]\n", get_timer(&tmr));
+
+	usleep(1000000);
+
+	set_reg(dev, GL843_SCANRESET, 0);
+	flush_regs(dev);
+chk_failed:
+	return ret;
 }
 

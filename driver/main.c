@@ -24,6 +24,8 @@
 #include "low.h"
 #include "cs4400f.h"
 
+#define SANE_VERSION_CODE(0, 1, 0)
+
 enum scanner_state
 {
 	STATE_UNAVAILABLE = 0,	/* Not connected or powered down */
@@ -46,7 +48,7 @@ enum carriage_state
 	CARRIAGE_STATIONARY	/* Away from home, not moving */
 };
 
-enum CS4400F_Option
+enum Scanner_Option
 {
 	OPT_NUM_OPTS = 0,
 
@@ -72,6 +74,8 @@ enum CS4400F_Option
 	OPT_NUM_OPTIONS,
 };
 
+/* CanoScan 4400F properties */
+
 #define SANE_VALUE_SCAN_SOURCE_PLATEN	SANE_I18N("Flatbed")
 #define SANE_VALUE_SCAN_SOURCE_TA	SANE_I18N("Transparency Adapter")
 
@@ -89,6 +93,20 @@ const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
 const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
 const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
+
+/* Backend globals */
+
+static libusb_context **g_libusb_ctx = NULL;
+extern int g_dbg_level; /* util.c */
+
+/* The scanner singleton. FIXME: Handle several scanners of the same kind. */
+static SANE_Device g_cs4400f_sanedev
+{
+	.name = "CanoScan 4400F",
+	.vendor = "CANON",
+	.model = "CanoScan 4400F",
+	.type = SANE_I18N("flatbed scanner"),
+};
 
 typedef struct CS4400F_Scanner
 {
@@ -192,7 +210,7 @@ SANE_Status CS4400F_setup(CS4400F_Scanner *s)
 	const int gamma_len = 256;
 	float default_gamma = 1.0;
 
-	/* Scanner-specific settings */
+	/* Scanner properties */
 
 	s->sources      = cs4400f_sources;
 	s->source_names = cs4400f_source_names;
@@ -265,6 +283,31 @@ static size_t max_string_size(const SANE_String_Const *strings)
 			max_size = size;
 	}
 	return max_size;
+}
+
+/* Get index of constraint s in string list */
+static int find_constraint_string(SANE_String s, const SANE_String_Const *strings)
+{
+	int i;
+	for (i = 0; *strings != NULL; strings++) {
+		if (strcmp(s, *strings) == 0)
+			return i;
+	}
+	DBG(DBG_error0, "BUG: unknown constraint string %s\n", s);
+	return 0;
+}
+
+/* Get index of constraint v in word array */
+static int find_constraint_value(SANE_Word v, const SANE_Word *values)
+{
+	int i, N;
+	N = *values++;
+	for (i = 1; i <= N; i++) {
+		if (v == *values++)
+			return i;
+	}
+	DBG(DBG_error0, "BUG: unknown constraint value %d\n", v);
+	return 1;
 }
 
 SANE_Status init_options(CS4400F_Scanner *s)
@@ -500,47 +543,46 @@ SANE_Status init_options(CS4400F_Scanner *s)
 SANE_Status sane_init(SANE_Int* version_code,
 		      SANE_Auth_Callback authorize)
 {
-	return SANE_STATUS_UNSUPPORTED;
+	int ret;
+
+	if (version_code)
+		*version_code = DRIVER_VERSION;
+
+	init_debug("GL843", -1);
+	ret = libusb_init(g_libusb_ctx);
+	if (ret != LIBUSB_SUCCESS) {
+		DBG(DBG_error0, "Cannot initialize libusb: %s",
+			sanei_libusb_strerror(ret));
+		return SANE_STATUS_IO_ERROR;
+	}
+
+	if (g_dbg_level > 0)
+		libusb_set_debug(g_libusb_ctx, 2);
+
+	return SANE_STATUS_GOOD;
 }
 
 void sane_exit()
 {
-}
-
-/* Get index of constraint s in string list */
-static int find_constraint_string(SANE_String s, const SANE_String_Const *strings)
-{
-	int i;
-	for (i = 0; *strings != NULL; strings++) {
-		if (strcmp(s, *strings) == 0)
-			return i;
+	if (g_libusb_ctx) {
+		libusb_exit(g_libusb_ctx);
+		g_libusb_ctx = NULL;
 	}
-	DBG(DBG_error0, "BUG: unknown constraint string %s\n", s);
-	return 0;
-}
-
-/* Get index of constraint v in word array */
-static int find_constraint_value(SANE_Word v, const SANE_Word *values)
-{
-	int i, N;
-	N = *values++;
-	for (i = 1; i <= N; i++) {
-		if (v == *values++)
-			return i;
-	}
-	DBG(DBG_error0, "BUG: unknown constraint value %d\n", v);
-	return 1;
 }
 
 SANE_Status sane_get_devices(const SANE_Device ***device_list,
 			     SANE_Bool local_only)
 {
+
+
 	return SANE_STATUS_UNSUPPORTED;
 }
 
 SANE_Status sane_open(SANE_String_Const devicename,
 		      SANE_Handle *handle)
 {
+	//strncmp(devicename, "auto", 5)
+
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
 }
@@ -710,18 +752,21 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			}
 
 			if (s->use_gamma && s->mode == SANE_FRAME_RGB) {
+				/* Enable color gamma, disable gray gamma */
 				disable_option(s, OPT_GAMMA_VECTOR);
 				enable_option(s, OPT_GAMMA_VECTOR_R);
 				enable_option(s, OPT_GAMMA_VECTOR_G);
 				enable_option(s, OPT_GAMMA_VECTOR_B);
 
 			} else if (s->use_gamma && s->mode == SANE_FRAME_GRAY) {
+				/* Enable gray gamma, disable color gamma */
 				enable_option(s, OPT_GAMMA_VECTOR);
 				disable_option(s, OPT_GAMMA_VECTOR_R);
 				disable_option(s, OPT_GAMMA_VECTOR_G);
 				disable_option(s, OPT_GAMMA_VECTOR_B);
 
 			} else {
+				/* Disable all gamma */
 				disable_option(s, OPT_GAMMA_VECTOR);
 				disable_option(s, OPT_GAMMA_VECTOR_R);
 				disable_option(s, OPT_GAMMA_VECTOR_G);
@@ -800,13 +845,13 @@ void sane_cancel(SANE_Handle handle)
 
 SANE_Status sane_set_io_mode(SANE_Handle handle, SANE_Bool non_blocking)
 {
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	if (non_blocking == SANE_FALSE)
+		return SANE_STATUS_GOOD;
 	return SANE_STATUS_UNSUPPORTED;
 }
 
 SANE_Status sane_get_select_fd(SANE_Handle handle, SANE_Int *fd)
 {
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
 }
 

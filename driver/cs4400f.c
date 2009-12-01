@@ -1,12 +1,52 @@
+/* Device-specific functions
+ *
+ * Copyright (C) 2009 Andreas Robinson <andr345 at gmail dot com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ */
+
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 #include "util.h"
 #include "low.h"
-#include "image.h"
-#include "motor.h"
+#include "scan.h"
 #include "cs4400f.h"
 
 /* Device-specific settings and functions for Canon Canoscan 4400F */
+
+/* Maximum AFE gain */
+float __attribute__ ((pure)) max_afe_gain()
+{
+	return 7.428;	/* WM8196 */
+}
+
+/* Minimum AFE gain */
+float __attribute__ ((pure)) min_afe_gain()
+{
+	return 0.735;	/* WM8196 */
+}
+
+/* Convert AFE gain to AFE register value. */
+int __attribute__ ((pure)) afe_gain_to_val(float g)
+{
+	g = satf(g, min_afe_gain(), max_afe_gain());
+	return (int) (283 - 208/g + 0.5);	/* WM8196 */
+}
+
+int write_afe_gain(struct gl843_device *dev, int i, float g)
+{
+	return write_afe(dev, 40 + i, afe_gain_to_val(g));
+}
+
 
 /* Set static (unchanging) hardware configuration */
 int do_base_configuration(struct gl843_device *dev)
@@ -428,6 +468,8 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 		scanmod = 7;
 		mono = 0;
 		break;
+	default:
+		DBG(DBG_error0, "BUG: Undefined pixel format\n");
 	}
 
 	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
@@ -539,30 +581,68 @@ chk_failed:
 	return ret;
 }
 
-#if 0
-int init_afe(struct gl843_device *dev)
+/* VREF settings used by the CS4400F:
+ * VRHOME = {0, 1, 4, 5}
+ * VRMOVE = {0}
+ * VRBACK = {0, 1, 3, 4, 7}
+ * VRSCAN = {0, 1, 4, 5}
+ */
+
+/* Build an acceleration speed profile for the scanner's
+ * stepping motor.
+ *
+ * m:       Empty output object to fill with data.
+ * c_start: inital clock ticks per motor step.
+ * c_end:   final clock ticks per step. Must be less than c_start.
+ * exp:     Power function exponent. Canon uses 1.5 and 2.0.
+ *
+ * Note:
+ *
+ * The function generates close approximations, but not
+ * exact replicas of the speed profiles used in Canon's 
+ * CanoScan 4400F driver for Windows.
+ *
+ * The slope function is y[x] = (K/x)^(1/exp),
+ * where K = c_start ^ exp, x = [1 ... MTRTBL_SIZE-1]
+ * y[0] = c_start and y[x] >= c_end.
+ */
+void build_accel_profile(struct motor_accel *m,
+			 uint16_t c_start,
+			 uint16_t c_end,
+			 float exp)
 {
-	int ret;
-	/* Reset AFE */
-	//CHK(write_afe(dev, 4, 0));
+	double K;
+	int i, n;
 
-	CHK(write_afe(dev, 32, 112));
-	CHK(write_afe(dev, 33, 112));
-	CHK(write_afe(dev, 34, 112));
+	K = pow(c_start, exp);
+	m->a[0] = c_start;
+	n = -1;
+	for (i = 1; i < MTRTBL_SIZE; i++) {
+		uint16_t c = pow(K / (double)i, 1/exp);
+		if (c <= c_end) {
+			m->a[i] = c_end;
+			if (n < 0)
+				n = i + 1;
+		} else {
+			m->a[i] = c;
+		}
+	}
+	if (n < 0) {
+		DBG(DBG_warn, "Can't reach %d ticks/step\n"
+			"    when starting from %d ticks/step.\n"
+			"    Actual: %d\n ticks/step",
+			c_start, c_end, m->a[MTRTBL_SIZE-1]);
+		n = MTRTBL_SIZE;
+	}
+	/* The scanner restricts profile lengths to 1 << STEPTIM increments. */
+	m->alen = ALIGN(n, 1 << STEPTIM);
 
-	CHK(write_afe(dev, 40, 216));
-	CHK(write_afe(dev, 41, 216));
-	CHK(write_afe(dev, 42, 216));
-
-	return 0;
-chk_failed:
-	DBG(DBG_error, "Cannot configure the analog frontend (AFE).\n");
-	return -1;
+	/* Get total acceleration time, used to determine Z1MOD and Z2MOD. */
+	m->t_max = 0;
+	for (i = 0; i < m->alen; i++)
+		m->t_max += m->a[i];
 }
-#endif
-
-
-
+#if 0
 /* m:		Empty table to fill with data
  * step:	motor step size
  * c_max:       timer count for first motor step. That is, start speed AND
@@ -573,8 +653,8 @@ chk_failed:
  * Note:        Set c_max >= c_min. These parameters express speed as
  *              motor clock ticks per step, not velocity.
  */
-void build_motor_table(struct gl843_motor_setting *m,
-			enum motor_step type,
+void old_build_motor_table(struct motor_setting *m,
+			enum motor_steptype type,
 			uint16_t c_max,
 			uint16_t c_min,
 			uint8_t vref)
@@ -636,6 +716,7 @@ void build_motor_table(struct gl843_motor_setting *m,
 	for (i = 0; i < n; i++)
 		m->t_max += a[i];
 }
+
 
 void cs4400f_build_motor_table(struct gl843_motor_setting *m,
 			       unsigned int speed,
@@ -768,6 +849,7 @@ void get_fastest_motor_table(struct gl843_motor_setting *m)
 		{ GL843_GPOE14, gpoe14 },
 	};
 	CHK(write_regs(dev, unknown_gpio, ARRAY_SIZE(unknown_gpio));
+#endif
 #endif
 
 /*

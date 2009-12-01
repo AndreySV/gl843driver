@@ -357,7 +357,7 @@ chk_failed:
 	return ret;
 }
 
-int send_motor_table(struct gl843_device *dev,
+int send_motor_accel(struct gl843_device *dev,
 		     int table, uint16_t *tbl, size_t len)
 {
 	int ret, outlen;
