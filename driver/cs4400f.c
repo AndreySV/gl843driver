@@ -592,19 +592,39 @@ chk_failed:
  * stepping motor.
  *
  * m:       Empty output object to fill with data.
- * c_start: inital clock ticks per motor step.
- * c_end:   final clock ticks per step. Must be less than c_start.
- * exp:     Power function exponent. Canon uses 1.5 and 2.0.
+ * c_start: Inital clock ticks per motor step.
+ * c_end:   Final clock ticks per step. Must be less than c_start.
+ *          See "speed limits" below.
+ * exp:     Power function exponent. (Actually the inverse of the exponent,
+ *          see the implementation note below. Larger exp => slower acceleration.)
+ *          Canon uses 1.5 and 2.0.
  *
- * Note:
+ * Speed limits for CanoScan 4400F:
+ *
+ * Smaller c => higher speed.
+ *
+ * full step:    Avoid. Does not work well at any speed.
+ * half-step:    c_min = 175 (up to 1200 dpi, platen scanning)
+ * quarter-step: c_min = 90 (1200 to 4800 dpi, film scanning)
+ * eighth-step:  c_min = 50 (Not used)
+ *
+ * c_max = 13000 for all step sizes.
+ *
+ * The motor will tend to stall if c < c_min (running too fast),
+ * and skip steps if c > c_max (running too slow).
+ *
+ * Implementation notes:
+ *
+ * The slope function is y[x] = (K/x)^(1/exp),
+ * where K = c_start ^ exp, x = [1 ... MTRTBL_SIZE-1]
+ * y[0] = c_start and y[x] >= c_end.
  *
  * The function generates close approximations, but not
  * exact replicas of the speed profiles used in Canon's 
  * CanoScan 4400F driver for Windows.
  *
- * The slope function is y[x] = (K/x)^(1/exp),
- * where K = c_start ^ exp, x = [1 ... MTRTBL_SIZE-1]
- * y[0] = c_start and y[x] >= c_end.
+ * Canon uses c_start = { 5617, 11234, 14298, 28597 or 24576 },
+ * and exp = 1.5 or 2.0
  */
 void build_accel_profile(struct motor_accel *m,
 			 uint16_t c_start,
@@ -627,15 +647,17 @@ void build_accel_profile(struct motor_accel *m,
 			m->a[i] = c;
 		}
 	}
+
 	if (n < 0) {
-		DBG(DBG_warn, "Can't reach %d ticks/step\n"
-			"    when starting from %d ticks/step.\n"
-			"    Actual: %d\n ticks/step",
+		DBG(DBG_warn, "Can't fit the acceleration profile into 
+			"MTRTBL_SIZE steps. c_start = %d, desired c_end = %d, "
+			" actual c_end = %d\n",
 			c_start, c_end, m->a[MTRTBL_SIZE-1]);
 		n = MTRTBL_SIZE;
 	}
 	/* The scanner restricts profile lengths to 1 << STEPTIM increments. */
 	m->alen = ALIGN(n, 1 << STEPTIM);
+	printf("m->alen = %d\n", m->alen);
 
 	/* Get total acceleration time, used to determine Z1MOD and Z2MOD. */
 	m->t_max = 0;

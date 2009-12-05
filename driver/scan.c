@@ -699,7 +699,7 @@ chk_mem_failed:
 	goto chk_failed;	
 }
 
-int do_move(struct gl843_device *dev)
+static int do_move(struct gl843_device *dev)
 {
 	int ret = 0;
 	int moving = 1;
@@ -707,7 +707,9 @@ int do_move(struct gl843_device *dev)
 	while (moving) {
 		CHK(read_regs(dev, GL843_MOTORENB, GL843_FEDCNT, -1));
 		moving = get_reg(dev, GL843_MOTORENB);
-		printf("\rfedcnt = %d        ", get_reg(dev, GL843_FEDCNT));
+		printf("\rhomesnr = %d, fedcnt = %d        ",
+			get_reg(dev, GL843_HOMESNR),
+			get_reg(dev, GL843_FEDCNT));
 		usleep(1000);
 	}
 	printf("\n");
@@ -715,26 +717,32 @@ chk_failed:
 	return ret;
 }
 
-/* Use this function to explore the motor settings of your scanner. */
-int do_move_test(struct gl843_device *dev, int speed, enum motor_steptype step)
+/* Use this function to explore the scanner motor settings. */
+int do_move_test(struct gl843_device *dev,
+		 int distance,
+		 int start_speed,
+		 int end_speed,
+		 float exp,
+		 int vref)
 {
 	int ret = 0;
 	struct dbg_timer tmr;
 	struct motor_accel m;
+	enum motor_steptype step = HALF_STEP;
 
 	init_timer(&tmr, CLOCK_REALTIME);
 
-	build_accel_profile(&m, 25476, 275, 1.5);
+	build_accel_profile(&m, start_speed, end_speed, exp);
 	CHK(send_motor_accel(dev, 1, m.a, 1020));
 	CHK(write_reg(dev, GL843_CLRMCNT, 1));	/* Clear FEDCNT */
 
-	/* Move forward (defined by FEEDL below) */
+	/* Move forward */
 
 	set_reg(dev, GL843_STEPNO, m.alen >> STEPTIM);
 	set_reg(dev, GL843_STEPTIM, STEPTIM);
-	set_reg(dev, GL843_VRMOVE, 5);
+	set_reg(dev, GL843_VRMOVE, vref);
 
-	set_reg(dev, GL843_FEEDL, 500);
+	set_reg(dev, GL843_FEEDL, distance);
 	set_reg(dev, GL843_STEPSEL, step);
 
 	set_reg(dev, GL843_MTRREV, 0);
@@ -743,22 +751,24 @@ int do_move_test(struct gl843_device *dev, int speed, enum motor_steptype step)
 
 	CHK(do_move(dev));
 
-#define RESTORE_MOTOR_POS
-#ifdef RESTORE_MOTOR_POS
+	usleep(100000);
+
 	/* Back up again */
-	set_reg(dev, GL843_FEEDL, 500);
+
+	set_reg(dev, GL843_FEEDL, distance);
 	set_reg(dev, GL843_MTRREV, 1);
 	CHK(flush_regs(dev));
 	CHK(do_move(dev));
-	printf("\n");
-#endif
+
 	set_reg(dev, GL843_MTRPWR, 0);
 	set_reg(dev, GL843_FULLSTP, 1);
 	CHK(flush_regs(dev));
 
 	printf("elapsed time: %f [ms]\n", get_timer(&tmr));
 
-	usleep(1000000);
+	usleep(100000);
+
+	/* Reset, in case the motor stalled */
 
 	set_reg(dev, GL843_SCANRESET, 0);
 	flush_regs(dev);

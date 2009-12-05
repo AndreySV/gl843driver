@@ -60,14 +60,14 @@ int main()
 	write_reg(dev, GL843_SCANRESET, 1);
 	while(!read_reg(dev, GL843_HOMESNR))
 		usleep(10000);
-
 	do_base_configuration(dev);
 	set_lamp(dev, LAMP_OFF, 0);
 	write_reg(dev, GL843_CLRMCNT, 1);
 	write_reg(dev, GL843_CLRLNCNT, 1);
 	write_reg(dev, GL843_FULLSTP, 1);
 
-	do_warmup_scan(dev, 0.3);
+//	do_warmup_scan(dev, 0.3);
+	do_move_test(dev, 10000, 24576/2, 175, 1.5, 5);
 
 	libusb_close(dev->usbdev);
 	return 0;

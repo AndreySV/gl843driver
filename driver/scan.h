@@ -40,7 +40,7 @@ struct calibration_info
 };
 
 int do_warmup_scan(struct gl843_device *dev, float y_pos);
-int do_move_test(struct gl843_device *dev, int speed, enum motor_steptype step);
-
+int do_move_test(struct gl843_device *dev,
+	int distance, int start_speed, int end_speed, float exp, int vref);
 
 #endif /* _SCAN_H_ */
