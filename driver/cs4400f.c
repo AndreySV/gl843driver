@@ -649,9 +649,9 @@ void build_accel_profile(struct motor_accel *m,
 	}
 
 	if (n < 0) {
-		DBG(DBG_warn, "Can't fit the acceleration profile into 
+		DBG(DBG_warn, "Cannot fit the acceleration profile into "
 			"MTRTBL_SIZE steps. c_start = %d, desired c_end = %d, "
-			" actual c_end = %d\n",
+			"actual c_end = %d\n",
 			c_start, c_end, m->a[MTRTBL_SIZE-1]);
 		n = MTRTBL_SIZE;
 	}
