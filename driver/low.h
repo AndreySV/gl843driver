@@ -22,7 +22,7 @@ struct gl843_device
 {
 	libusb_device_handle *usbdev;
 
-	int max_ioreg;	/* Last IO register address */
+	unsigned int max_ioreg;	/* Last IO register address */
 	int min_devreg;	/* Smallest devreg enum */
 	int max_devreg;	/* Largest devreg enum, not counting end marker */
 	int min_dirty;	/* First dirty IO register */

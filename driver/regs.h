@@ -33,7 +33,7 @@ struct regset_ent
 /* Device register to IO register mapping */
 struct regmap_ent
 {
-	int devreg;	/* Device register - enum gl843_reg */
+	unsigned int devreg;	/* Device register - enum gl843_reg */
 	int ioreg;	/* IO register address */
 	char shift;	/* IO register shift
 			 * When storing devreg in ioreg:

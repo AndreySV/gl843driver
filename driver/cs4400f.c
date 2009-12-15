@@ -632,7 +632,8 @@ void build_accel_profile(struct motor_accel *m,
 			 float exp)
 {
 	double K;
-	int i, n;
+	int n;
+	unsigned int i;
 
 	K = pow(c_start, exp);
 	m->a[0] = c_start;

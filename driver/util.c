@@ -47,7 +47,7 @@ void vprintf_dbg(int level, const char *func, int line, const char *msg, ...)
 void init_debug(const char *backend, int level)
 {
 	char *buf, *s;
-	int i;
+	size_t i;
 
 	g_backend = strdup(backend);
 
