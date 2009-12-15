@@ -96,12 +96,11 @@ const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
 
 /* Backend globals */
 
-static libusb_context **g_libusb_ctx = NULL;
+static libusb_context *g_libusb_ctx = NULL;
 extern int g_dbg_level; /* util.c */
 
 /* The scanner singleton. FIXME: Handle several scanners of the same kind. */
-static SANE_Device g_cs4400f_sanedev
-{
+static SANE_Device g_cs4400f_sanedev = {
 	.name = "CanoScan 4400F",
 	.vendor = "CANON",
 	.model = "CanoScan 4400F",
@@ -549,7 +548,7 @@ SANE_Status sane_init(SANE_Int* version_code,
 		*version_code = DRIVER_VERSION;
 
 	init_debug("GL843", -1);
-	ret = libusb_init(g_libusb_ctx);
+	ret = libusb_init(&g_libusb_ctx);
 	if (ret != LIBUSB_SUCCESS) {
 		DBG(DBG_error0, "Cannot initialize libusb: %s",
 			sanei_libusb_strerror(ret));
@@ -565,7 +564,7 @@ SANE_Status sane_init(SANE_Int* version_code,
 void sane_exit()
 {
 	if (g_libusb_ctx) {
-		libusb_exit(g_libusb_ctx);
+		libusb_exit(&g_libusb_ctx);
 		g_libusb_ctx = NULL;
 	}
 }
