@@ -437,6 +437,9 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 
 		vsmp = 3;
 		rhi = 2; rlow = 5; ghi = 8; glow = 11; bhi = 13; blow = 15;
+	} else {
+		DBG(DBG_error0, "BUG: Unhandled afe_dpi %d\n", afe_dpi);
+		return -1;
 	}
 
 	strpixel = tgw * 32 + 2 * tgshld * 32 + start_x;
@@ -471,6 +474,7 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 		break;
 	default:
 		DBG(DBG_error0, "BUG: Undefined pixel format\n");
+		return -1;
 	}
 
 	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
