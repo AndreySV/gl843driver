@@ -20,11 +20,26 @@
 #include <sane/sane.h>
 #include <sane/saneopts.h>
 
+/** Option_Value union
+ *  *
+ *   * Convenience union to access option values given to the backend
+ *    */
+#ifndef SANE_OPTION
+typedef union
+{
+	SANE_Bool b;          /**< bool */
+	SANE_Word w;          /**< word */
+	SANE_Word *wa;        /**< word array */
+	SANE_String s;        /**< string */
+}
+Option_Value;
+#define SANE_OPTION 1
+#endif
+
+
 #include "util.h"
 #include "low.h"
 #include "cs4400f.h"
-
-#define SANE_VERSION_CODE(0, 1, 0)
 
 enum scanner_state
 {
