@@ -29,6 +29,7 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <ansidecl.h>
 
 #define SETUP_LEN 8
 
@@ -318,7 +319,7 @@ int d = -1;		/* /dev/usbmon* descriptor */
 FILE *logfile = NULL;	/* Output file */
 int ntotal = 0;		/* Number of packets processed */
 
-void sigint_handler(int sig)
+void sigint_handler(ARG_UNUSED(int sig))
 {
 	if (d > 0) {
 		struct usbmon_stats stats;
