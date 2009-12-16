@@ -423,7 +423,7 @@ int main()
 			if (hdr->type == '@' || hdr->devnum != devnum)
 				continue;
 
-			process_urb(hdr, ((char *)hdr) + sizeof(*hdr), logfile);
+			process_urb(hdr, ((unsigned char *)hdr) + sizeof(*hdr), logfile);
 		}
 	}
 
