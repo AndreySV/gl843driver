@@ -75,6 +75,7 @@ static int usb_bulk_xfer(struct libusb_device_handle *dev_handle,
 	return ret;
 }
 
+/* Construct gl843 device and register cache */
 struct gl843_device *create_gl843dev(libusb_device_handle *h)
 {
 	int i;
@@ -102,6 +103,7 @@ struct gl843_device *create_gl843dev(libusb_device_handle *h)
 	return dev;
 }
 
+/* Destructor */
 void destroy_gl843dev(struct gl843_device *dev)
 {
 	free(dev);
@@ -145,6 +147,7 @@ void mark_dirty_reg(struct gl843_device *dev, enum gl843_reg reg)
 		mark_ioreg_dirty(dev, rmap->ioreg, rmap->mask);
 }
 
+/* Read a value from the register cache */
 unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg)
 {
 	const struct regmap_ent *rmap;
@@ -173,6 +176,7 @@ unsigned int get_reg(struct gl843_device *dev, enum gl843_reg reg)
 	return val;
 }
 
+/* Write value to the register cache */
 void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val)
 {
 	const struct regmap_ent *rmap;
@@ -200,6 +204,7 @@ void set_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val)
 	}
 }
 
+/* Write multiple values to the register cache */
 void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len)
 {
 	size_t i;
@@ -208,6 +213,9 @@ void set_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len)
 	}
 }
 
+/* Read an IO-register from the scanner.
+ * See regs.h
+ */
 static int read_ioreg(struct gl843_device *dev, uint8_t ioreg)
 {
 	int ret;
@@ -226,6 +234,9 @@ chk_failed:
 	return ret;
 }
 
+/* Write to an IO-register in the scanner.
+ * See regs.h
+ */
 static int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
 {
 	int ret;
@@ -241,6 +252,7 @@ static int write_ioreg(struct gl843_device *dev, uint8_t ioreg, int val)
 	return ret;
 }
 
+/* Read, and cache, multiple scanner registers */
 int read_regs(struct gl843_device *dev, ...)
 {
 	int ret;
@@ -267,6 +279,7 @@ chk_failed:
 	return ret;
 }
 
+/* Read, and cache, a scanner register */
 int read_reg(struct gl843_device *dev, enum gl843_reg reg)
 {
 	int ret;
@@ -276,6 +289,7 @@ chk_failed:
 	return ret;
 }
 
+/* Send dirty registers in the cache to the scanner */
 int flush_regs(struct gl843_device *dev)
 {
 	int i, ret;
@@ -292,12 +306,14 @@ chk_failed:
 	return ret;
 }
 
+/* Write to, and cache, a scanner register */
 int write_reg(struct gl843_device *dev, enum gl843_reg reg, unsigned int val)
 {
 	set_reg(dev, reg, val);
 	return flush_regs(dev);
 }
 
+/* Write to, and cache, multiple scanner registers */
 int write_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len)
 {
 	set_regs(dev, regset, len);
@@ -332,6 +348,10 @@ chk_failed:
 	return ret;
 }
 
+/* Write a register in the analog frontend (AFE), aka AD-converter.
+ * reg: register address
+ * val: register value (8-bit)
+ */
 int write_afe(struct gl843_device *dev, int reg, int val)
 {
 	int ret;
@@ -357,6 +377,11 @@ chk_failed:
 	return ret;
 }
 
+/* Send a stepping motor acceleration table to the scanner
+ * table: table number, 1 - 5.
+ * tbl: acceleration table buffer
+ * len: buffer length in bytes
+ */
 int send_motor_accel(struct gl843_device *dev,
 		     int table, uint16_t *tbl, size_t len)
 {
@@ -383,6 +408,11 @@ chk_failed:
 	return ret;
 }
 
+/* Send a gamma correction table to the scanner.
+ * table: table number, 1, 2 or 3. (One for each color component)
+ * tbl: gamma table buffer
+ * len: buffer length in bytes
+ */
 int send_gamma_table(struct gl843_device *dev,
 		     int table, uint8_t *tbl, size_t len)
 {
@@ -403,7 +433,7 @@ chk_failed:
 }
 
 /* Send shading data to the scanner.
- * buf: data buffer
+ * buf: shading data buffer
  * len: length in bytes
  */
 int send_shading(struct gl843_device *dev, uint16_t *buf, size_t len, int addr)
@@ -435,6 +465,12 @@ chk_failed:
 	return ret;
 }
 
+/* Read image data from the scanner.
+ * buf: destination data buffer, at least 'len' bytes long
+ * len: number of bytes to read
+ * bpp: number of bits per pixel
+ * timeout: USB timeout in milliseconds
+ */
 int read_line(struct gl843_device *dev,
 	      uint8_t *buf,
 	      size_t len,
