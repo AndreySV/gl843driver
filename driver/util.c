@@ -155,7 +155,7 @@ float __attribute__ ((pure)) satf(float v, float min, float max)
 		v = max;
 	return v;
 }
-
+#if 0
 const char *sanei_libusb_strerror(int errcode)
 {
 	switch (errcode) {
@@ -223,7 +223,7 @@ const char *sanei_strerror(int errcode)
 		return "undefined SANE error";
 	}
 }
-
+#endif
 pid_t sanei_thread_begin(int (*func) (void *args), void *args)
 {
 	pid_t pid;

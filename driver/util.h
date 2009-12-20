@@ -44,7 +44,7 @@
 #define CHK_MEM(x)				\
 	do {					\
 		void *p;			\
-		p = (x);			\
+		p = (void*)(x);			\
 		if (p == NULL)			\
 			goto chk_mem_failed;	\
 	} while (0)
