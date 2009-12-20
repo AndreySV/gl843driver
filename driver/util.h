@@ -54,10 +54,11 @@
 #define DBG_msg         2	/* scanner workflow messages */
 #define DBG_warn        3	/* warnings and non-fatal errors */
 #define DBG_info        4	/* informational messages */
-#define DBG_proc        5	/* starting/finishing functions */
-#define DBG_io          6	/* io functions */
-#define DBG_io2         7	/* io functions that are called very often */
-#define DBG_data        8	/* log image data */
+#define DBG_api		5	/* SANE API entry/exits */
+#define DBG_proc        6	/* starting/finishing functions */
+#define DBG_io          7	/* io functions */
+#define DBG_io2         8	/* io functions that are called very often */
+#define DBG_data        9	/* log image data */
 
 #define DBG(level, msg, ...)	\
 	vprintf_dbg(level, __func__, 0, msg, ##__VA_ARGS__)
@@ -88,8 +89,5 @@ void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len);
 
 int mm_to_px(float start, float end, int dpi, int *offset);
 float __attribute__ ((pure)) satf(float v, float min, float max);
-
-const char *sanei_libusb_strerror(int errcode);
-pid_t sanei_thread_begin(int (*func) (void *args), void *args);
 
 #endif /* _GL843_UTIL_H_ */

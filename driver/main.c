@@ -20,6 +20,8 @@
 #include <sane/sane.h>
 #include <sane/saneopts.h>
 
+#include "sanei.h"
+
 /** Option_Value union
  *  *
  *   * Convenience union to access option values given to the backend
@@ -114,8 +116,8 @@ const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
 
 /* Backend globals */
 
-static libusb_context *g_libusb_ctx = NULL;
-static SANE_Device **g_device_list = NULL;
+static libusb_context *g_libusb_ctx;
+static SANE_Device **g_device_list;
 extern int g_dbg_level; /* util.c */
 
 typedef struct CS4400F_Scanner
@@ -590,13 +592,19 @@ static void destroy_sane_device_list(SANE_Device **device_list)
 	}
 }
 
+#ifndef DRIVER_BUILD
+#error DRIVER_BUILD number is undefined
+#endif
+
 SANE_Status sane_init(SANE_Int* version_code,
 		      SANE_Auth_Callback authorize)
 {
 	int ret;
 
 	if (version_code)
-		*version_code = DRIVER_VERSION;
+		*version_code = SANE_VERSION_CODE(1,0,DRIVER_BUILD);
+
+	g_device_list = NULL;
 
 	init_debug("GL843", -1);
 	ret = libusb_init(&g_libusb_ctx);
@@ -642,7 +650,7 @@ SANE_Status sane_get_devices(const SANE_Device ***device_list,
 		CHK(libusb_get_device_descriptor(usb_devs[i], &dd));
 		if (dd.idVendor == CS4400F_VID && dd.idProduct == CS4400F_PID) {
 			/* Add device with matching product- and vendor-IDs */
-			CHK_MEM(g_device_list = realloc(*device_list,
+			CHK_MEM(g_device_list = realloc(g_device_list,
 				sizeof(SANE_Device*) * (m + 2)));
 			g_device_list[m] = create_cs4400f_sane_device(
 				libusb_get_bus_number(usb_devs[i]),
@@ -655,7 +663,7 @@ SANE_Status sane_get_devices(const SANE_Device ***device_list,
 
 	libusb_free_device_list(usb_devs, 1);
 	if (device_list)
-		*device_list = g_device_list;
+		*device_list = (const SANE_Device **) g_device_list;
 
 	return SANE_STATUS_GOOD;
 
@@ -976,31 +984,42 @@ SANE_Status sane_get_select_fd(SANE_Handle handle, SANE_Int *fd)
 #define DLL_EXPORT __attribute__ ((visibility("default")))
 #define ENTRY(name) sane_gl843_##name
 
-DLL_EXPORT
-SANE_Status ENTRY(init)(SANE_Int* version_code,
-			SANE_Auth_Callback authorize)
+DLL_EXPORT SANE_Status
+ENTRY(init)(SANE_Int* version_code, SANE_Auth_Callback authorize)
 {
-	return sane_init(version_code, authorize);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_init(version_code, authorize);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-void ENTRY(exit)()
+DLL_EXPORT void
+ENTRY(exit)()
 {
+	DBG(DBG_api, "enter\n");
 	sane_exit();
+	DBG(DBG_api, "leave\n");
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(get_devices)(const SANE_Device ***device_list,
-			       SANE_Bool local_only)
+DLL_EXPORT SANE_Status
+ENTRY(get_devices)(const SANE_Device ***device_list, SANE_Bool local_only)
 {
-	return sane_get_devices(device_list, local_only);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_get_devices(device_list, local_only);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(open)(SANE_String_Const devicename,
-			SANE_Handle *handle)
+DLL_EXPORT SANE_Status
+ENTRY(open)(SANE_String_Const devicename, SANE_Handle *handle)
 {
-	return sane_open(devicename, handle);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_open(devicename, handle);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
 DLL_EXPORT
@@ -1009,59 +1028,88 @@ void ENTRY(close)(SANE_Handle handle)
 	sane_close(handle);
 }
 
-DLL_EXPORT
-const SANE_Option_Descriptor *ENTRY(get_option_descriptor)(SANE_Handle handle,
-							   SANE_Int option)
+DLL_EXPORT const SANE_Option_Descriptor *
+ENTRY(get_option_descriptor)(SANE_Handle handle, SANE_Int option)
 {
-	return sane_get_option_descriptor(handle, option);
+	const SANE_Option_Descriptor *ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_get_option_descriptor(handle, option);
+	DBG(DBG_api, "leave\n");
+	return ret;
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(control_option)(SANE_Handle handle,
-				  SANE_Int option,
-				  SANE_Action action,
-				  void *value,
-				  SANE_Int *info)
+DLL_EXPORT SANE_Status
+ENTRY(control_option)(SANE_Handle handle,
+		      SANE_Int option,
+		      SANE_Action action,
+		      void *value,
+		      SANE_Int *info)
 {
-	return sane_control_option(handle, option, action, value, info);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_control_option(handle, option, action, value, info);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(get_parameters)(SANE_Handle handle, SANE_Parameters *params)
+DLL_EXPORT SANE_Status
+ENTRY(get_parameters)(SANE_Handle handle, SANE_Parameters *params)
 {
-	return sane_get_parameters(handle, params);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_get_parameters(handle, params);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(start)(SANE_Handle handle)
+DLL_EXPORT SANE_Status
+ENTRY(start)(SANE_Handle handle)
 {
-	return sane_start(handle);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_start(handle);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(sane_read)(SANE_Handle handle,
-			     SANE_Byte *data,
-			     SANE_Int max_length,
-			     SANE_Int *length)
+DLL_EXPORT SANE_Status
+ENTRY(read)(SANE_Handle handle,
+	    SANE_Byte *data,
+	    SANE_Int max_length,
+	    SANE_Int *length)
 {
-	return sane_read(handle, data, max_length, length);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_read(handle, data, max_length, length);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-void ENTRY(cancel)(SANE_Handle handle)
+DLL_EXPORT void
+ENTRY(cancel)(SANE_Handle handle)
 {
+	DBG(DBG_api, "enter\n");
 	sane_cancel(handle);
+	DBG(DBG_api, "leave\n");
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(set_io_mode)(SANE_Handle handle, SANE_Bool non_blocking)
+DLL_EXPORT SANE_Status
+ENTRY(set_io_mode)(SANE_Handle handle, SANE_Bool non_blocking)
 {
-	return sane_set_io_mode(handle, non_blocking);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_set_io_mode(handle, non_blocking);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
-DLL_EXPORT
-SANE_Status ENTRY(get_select_fd)(SANE_Handle handle, SANE_Int *fd)
+DLL_EXPORT SANE_Status
+ENTRY(get_select_fd)(SANE_Handle handle, SANE_Int *fd)
 {
-	return sane_get_select_fd(handle, fd);
+	SANE_Status ret;
+	DBG(DBG_api, "enter\n");
+	ret = sane_get_select_fd(handle, fd);
+	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
+	return ret;
 }
 
