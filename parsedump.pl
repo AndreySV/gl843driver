@@ -58,6 +58,7 @@ sub read_log
 	my $prev_cmd = 'x';
 	my $have_data;
 	my $blen;
+	my $mtr_gamma = 0;
 
 	my $sel_reg = "00";
 
@@ -103,13 +104,22 @@ sub read_log
 				} else {
 					printf("$blen bytes @ 0x%x", $offset);
 				}
+				$mtr_gamma = ($sel_reg eq '28') ? 1 : 0;
 				printf("\n");
 			}
 			when('R') { # Request bulk data from scanner
 				# Print nothing
 			}
 			when('W') { # Send bulk data to scanner
-				printf("$ts wr_b => $blen bytes @ 0x%x\n", $offset);
+				printf("$ts wr_b => $blen bytes @ 0x%x ", $offset);
+				if ($mtr_gamma eq '1') {
+					# Print first and last word of a motor or gamma table
+					printf("data (gmmaddr=%d): %d ... %d",
+						$regmap->get_devreg_val("GMMADDR"),
+						unpack("v", $data),
+						vec($data,$blen-2,8) + vec($data, $blen-1, 8) * 256);
+				}
+				printf("\n");
 			}
 			when('a') { # Scanner returns data
 				if ($prev_cmd eq 'r' && $sel_reg ne '6d') {
