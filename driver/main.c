@@ -91,6 +91,9 @@ enum Scanner_Option
 
 /* CanoScan 4400F properties */
 
+#define CS4400F_VID 0x04a9
+#define CS4400F_PID 0x2228
+
 #define SANE_VALUE_SCAN_SOURCE_PLATEN	SANE_I18N("Flatbed")
 #define SANE_VALUE_SCAN_SOURCE_TA	SANE_I18N("Transparency Adapter")
 
@@ -102,8 +105,8 @@ const SANE_String_Const cs4400f_mode_names[] = {
 	SANE_VALUE_SCAN_MODE_GRAY, SANE_VALUE_SCAN_MODE_COLOR, NULL };
 const SANE_Int cs4400f_bit_depths[]  = { 2, 8, 16 };
 const SANE_Int cs4400f_resolutions[] = { 5, 75, 150, 300, 600, 1200 };
-const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
+const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(210.0), 0 };
+const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(297.0), 0 };
 const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
 const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
@@ -112,15 +115,8 @@ const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
 /* Backend globals */
 
 static libusb_context *g_libusb_ctx = NULL;
+static SANE_Device **g_device_list = NULL;
 extern int g_dbg_level; /* util.c */
-
-/* The scanner singleton. FIXME: Handle several scanners of the same kind. */
-static SANE_Device g_cs4400f_sanedev = {
-	.name = "CanoScan 4400F",
-	.vendor = "CANON",
-	.model = "CanoScan 4400F",
-	.type = SANE_I18N("flatbed scanner"),
-};
 
 typedef struct CS4400F_Scanner
 {
@@ -324,7 +320,7 @@ static int find_constraint_value(SANE_Word v, const SANE_Word *values)
 	return 1;
 }
 
-SANE_Status init_options(CS4400F_Scanner *s)
+static SANE_Status init_options(CS4400F_Scanner *s)
 {
 	int i;
 	SANE_Option_Descriptor *opt;
@@ -554,6 +550,46 @@ SANE_Status init_options(CS4400F_Scanner *s)
 	return SANE_STATUS_GOOD;
 }
 
+static void destroy_sane_device(SANE_Device *dev)
+{
+	if (dev) {
+		free((void *)dev->name);
+		free((void *)dev->vendor);
+		free((void *)dev->model);
+		free((void *)dev->type);
+		free(dev);
+	}
+}
+
+static SANE_Device *create_cs4400f_sane_device(int bus, int addr)
+{
+	SANE_Device *dev;
+
+	CHK_MEM(dev = calloc(sizeof(*dev), 1));
+	if (asprintf(&dev->name, "CanoScan 4400F %03d:%03d", bus, addr) < 0)
+		goto chk_mem_failed;
+	CHK_MEM(dev->vendor = strdup("CANON"));
+	CHK_MEM(dev->model = strdup("CanoScan 4400F"));
+	CHK_MEM(dev->type = strdup(SANE_I18N("flatbed scanner")));
+	return dev;
+
+chk_mem_failed:
+	DBG(DBG_error0, "Out of memory\n");
+	destroy_sane_device(dev);
+	return NULL;
+}
+
+static void destroy_sane_device_list(SANE_Device **device_list)
+{
+	int i = 0;
+	if (device_list) {
+		for (i = 0; device_list[i] != NULL; i++) {
+			destroy_sane_device(device_list[i]);
+		}
+		free(device_list);
+	}
+}
+
 SANE_Status sane_init(SANE_Int* version_code,
 		      SANE_Auth_Callback authorize)
 {
@@ -579,26 +615,90 @@ SANE_Status sane_init(SANE_Int* version_code,
 void sane_exit()
 {
 	if (g_libusb_ctx) {
-		libusb_exit(&g_libusb_ctx);
+		libusb_exit(g_libusb_ctx);
 		g_libusb_ctx = NULL;
 	}
+	destroy_sane_device_list(g_device_list);
 }
 
 SANE_Status sane_get_devices(const SANE_Device ***device_list,
 			     SANE_Bool local_only)
 {
+	int ret;
+	int i, n, m;
+	struct libusb_device **usb_devs = NULL;
 
+	CHK(n = libusb_get_device_list(g_libusb_ctx, &usb_devs));
 
-	return SANE_STATUS_UNSUPPORTED;
+	destroy_sane_device_list(g_device_list);
+	/* Create empty list */
+	g_device_list = malloc(sizeof(SANE_Device*));
+	m = 0;
+
+	/* Find matching devices */
+	for (i = 0; i < n; i++) {
+		struct libusb_device_descriptor dd;
+
+		CHK(libusb_get_device_descriptor(usb_devs[i], &dd));
+		if (dd.idVendor == CS4400F_VID && dd.idProduct == CS4400F_PID) {
+			/* Add device with matching product- and vendor-IDs */
+			CHK_MEM(g_device_list = realloc(*device_list,
+				sizeof(SANE_Device*) * (m + 2)));
+			g_device_list[m] = create_cs4400f_sane_device(
+				libusb_get_bus_number(usb_devs[i]),
+				libusb_get_device_address(usb_devs[i]));
+			m++;
+		}
+	}
+
+	g_device_list[m] = NULL; /* Last entry is NULL. */
+
+	libusb_free_device_list(usb_devs, 1);
+	if (device_list)
+		*device_list = g_device_list;
+
+	return SANE_STATUS_GOOD;
+
+chk_mem_failed:
+	return SANE_STATUS_NO_MEM;
+chk_failed:
+	if (usb_devs)
+		libusb_free_device_list(usb_devs, 1);
+	DBG(DBG_error0, "Device enumeration failed: %s\n",
+		sanei_libusb_strerror(ret));
+	return SANE_STATUS_IO_ERROR;
 }
 
 SANE_Status sane_open(SANE_String_Const devicename,
 		      SANE_Handle *handle)
 {
-	//strncmp(devicename, "auto", 5)
+	int i;
+	int ret;
+	SANE_Device *dev = NULL;
+
+	if (g_device_list == NULL)
+		CHK_SANE(sane_get_devices(NULL, SANE_TRUE));
+
+	if (strlen(devicename) == 0 || strcmp(devicename, "auto") == 0) {
+		dev = g_device_list[0];
+	} else {
+		for (i = 0; g_device_list[i] != NULL; i++) {
+			if (strcmp(devicename, g_device_list[i]->name) == 0) {
+				dev = g_device_list[i];
+			}
+		}
+	}
+	if (dev == NULL) {
+		return SANE_STATUS_INVAL; /* No device found */
+	}
+
+	/* TODO: The rest ... */
 
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
+
+chk_sane_failed:
+	return ret;
 }
 
 void sane_close(SANE_Handle handle)
@@ -867,5 +967,101 @@ SANE_Status sane_set_io_mode(SANE_Handle handle, SANE_Bool non_blocking)
 SANE_Status sane_get_select_fd(SANE_Handle handle, SANE_Int *fd)
 {
 	return SANE_STATUS_UNSUPPORTED;
+}
+
+
+/* DLL exports */
+
+/* GCC 4.x attribute */
+#define DLL_EXPORT __attribute__ ((visibility("default")))
+#define ENTRY(name) sane_gl843_##name
+
+DLL_EXPORT
+SANE_Status ENTRY(init)(SANE_Int* version_code,
+			SANE_Auth_Callback authorize)
+{
+	return sane_init(version_code, authorize);
+}
+
+DLL_EXPORT
+void ENTRY(exit)()
+{
+	sane_exit();
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(get_devices)(const SANE_Device ***device_list,
+			       SANE_Bool local_only)
+{
+	return sane_get_devices(device_list, local_only);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(open)(SANE_String_Const devicename,
+			SANE_Handle *handle)
+{
+	return sane_open(devicename, handle);
+}
+
+DLL_EXPORT
+void ENTRY(close)(SANE_Handle handle)
+{
+	sane_close(handle);
+}
+
+DLL_EXPORT
+const SANE_Option_Descriptor *ENTRY(get_option_descriptor)(SANE_Handle handle,
+							   SANE_Int option)
+{
+	return sane_get_option_descriptor(handle, option);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(control_option)(SANE_Handle handle,
+				  SANE_Int option,
+				  SANE_Action action,
+				  void *value,
+				  SANE_Int *info)
+{
+	return sane_control_option(handle, option, action, value, info);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(get_parameters)(SANE_Handle handle, SANE_Parameters *params)
+{
+	return sane_get_parameters(handle, params);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(start)(SANE_Handle handle)
+{
+	return sane_start(handle);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(sane_read)(SANE_Handle handle,
+			     SANE_Byte *data,
+			     SANE_Int max_length,
+			     SANE_Int *length)
+{
+	return sane_read(handle, data, max_length, length);
+}
+
+DLL_EXPORT
+void ENTRY(cancel)(SANE_Handle handle)
+{
+	sane_cancel(handle);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(set_io_mode)(SANE_Handle handle, SANE_Bool non_blocking)
+{
+	return sane_set_io_mode(handle, non_blocking);
+}
+
+DLL_EXPORT
+SANE_Status ENTRY(get_select_fd)(SANE_Handle handle, SANE_Int *fd)
+{
+	return sane_get_select_fd(handle, fd);
 }
 
