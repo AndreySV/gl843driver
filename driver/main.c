@@ -12,6 +12,7 @@
  * Lesser General Public License for more details.
  */
 
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -565,16 +566,18 @@ static void destroy_sane_device(SANE_Device *dev)
 
 static SANE_Device *create_cs4400f_sane_device(int bus, int addr)
 {
+	int ret;
 	SANE_Device *dev;
 
 	CHK_MEM(dev = calloc(sizeof(*dev), 1));
-	if (asprintf(&dev->name, "CanoScan 4400F %03d:%03d", bus, addr) < 0)
+	CHK(asprintf((char **) &dev->name, "CanoScan 4400F %03d:%03d", bus, addr));
 		goto chk_mem_failed;
 	CHK_MEM(dev->vendor = strdup("CANON"));
 	CHK_MEM(dev->model = strdup("CanoScan 4400F"));
 	CHK_MEM(dev->type = strdup(SANE_I18N("flatbed scanner")));
 	return dev;
 
+chk_failed:
 chk_mem_failed:
 	DBG(DBG_error0, "Out of memory\n");
 	destroy_sane_device(dev);
@@ -702,7 +705,7 @@ SANE_Status sane_open(SANE_String_Const devicename,
 
 	/* TODO: The rest ... */
 
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
 
 chk_sane_failed:
@@ -711,7 +714,7 @@ chk_sane_failed:
 
 void sane_close(SANE_Handle handle)
 {
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 }
 
 const SANE_Option_Descriptor *sane_get_option_descriptor(SANE_Handle handle,
@@ -947,7 +950,7 @@ SANE_Status sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
 
 SANE_Status sane_start(SANE_Handle handle)
 {
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
 }
 
@@ -956,13 +959,13 @@ SANE_Status sane_read(SANE_Handle handle,
 		      SANE_Int max_length,
 		      SANE_Int *length)
 {
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
 }
 
 void sane_cancel(SANE_Handle handle)
 {
-	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 }
 
 SANE_Status sane_set_io_mode(SANE_Handle handle, SANE_Bool non_blocking)
