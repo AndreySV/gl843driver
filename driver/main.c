@@ -44,6 +44,41 @@ Option_Value;
 #include "low.h"
 #include "cs4400f.h"
 
+typedef struct
+{
+	SANE_String_Const vendor;
+	SANE_String_Const model;
+	SANE_String_Const type;
+	SANE_Int vid;
+	SANE_Int pid;
+	SANE_String_Const name;
+
+} Scanner_Model;
+
+/* Private extension of SANE_Device */
+typedef struct
+{
+	SANE_Device sane_dev;
+	libusb_device *usb_dev;
+
+} SANE_USB_Device;
+
+/* List of scanners recognized by the driver */
+const Scanner_Model g_known_models[] =
+{
+	{
+		.vendor = "Canon",
+		.model = "CanonScan 4400F",
+		.type = SANE_I18N("flatbed scanner"),
+		.vid = 0x04a9, .pid = 0x2228,
+		.name = "cs4400f",
+	},
+	{
+		/* End-of-list marker */
+		"", "", "", 0, 0, "",
+	}
+};
+
 enum scanner_state
 {
 	STATE_UNAVAILABLE = 0,	/* Not connected or powered down */
@@ -55,15 +90,6 @@ enum scanner_state
 	STATE_MOVING_OUT,	/* Moving to scan start */
 	STATE_SCANNING,
 	STATE_MOVING_HOME,	/* Going home */
-};
-
-enum carriage_state
-{
-	CARRIAGE_UNKNOWN = 0,	/* Unknown position and speed */
-	CARRIAGE_HOME,		/* At home, not moving */
-	CARRIAGE_MOVING_OUT,	/* Moving forward */
-	CARRIAGE_MOVING_HOME,	/* Moving to the home position */
-	CARRIAGE_STATIONARY	/* Away from home, not moving */
 };
 
 enum Scanner_Option
@@ -115,20 +141,17 @@ const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
 const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
 
-/* Backend globals */
-
-static libusb_context *g_libusb_ctx;
-static SANE_Device **g_device_list;
-extern int g_dbg_level; /* util.c */
-
-typedef struct CS4400F_Scanner
+typedef struct
 {
+	enum scanner_state state;
+	struct gl843_device *hw_dev;
+
 	SANE_Option_Descriptor opt[OPT_NUM_OPTIONS];
 
 	/* Lamp settings */
 
 	const SANE_Int *sources;
- 	const SANE_String_Const *source_names;
+	const SANE_String_Const *source_names;
 	enum gl843_lamp source;	/* Light source */
 	SANE_Range lamp_to_lim;	/* Timeout limit */
 	SANE_Int lamp_timeout;	/* Lamp timeout [minutes] */
@@ -179,112 +202,15 @@ typedef struct CS4400F_Scanner
 	SANE_Fixed bw_threshold;	/* Black/white threshold [percent] */
 	SANE_Fixed bw_hysteresis;	/* Threshold hysteresis [percent] */
 
-	/* Scanner state */
-
-	SANE_Bool is_scanning;
-#if 0
-	struct gl843_device *hw;
-	enum scanner_state state;
-#endif
-
 } CS4400F_Scanner;
 
-static SANE_Word *create_gamma(int N, float gamma)
-{
-	int k;
-	SANE_Word *g;
+/* Backend globals */
 
-	if (gamma < 0.01)
-		gamma = 0.01;
-	g = malloc(N * sizeof(SANE_Word));
-	if (!g)
-		return NULL;
+static libusb_context *g_libusb_ctx;
+static SANE_USB_Device **g_scanners;
+extern int g_dbg_level; /* util.c */
 
-	for (k = 0; k < N; k++) {
-		g[k] = (uint16_t) (65535 * powf((float)k / N, 1/gamma) + 0.5);
-	}
-	return g;
-}
-
-static void cleanup_options(CS4400F_Scanner *s)
-{
-	free(s->gray_gamma);
-	s->gray_gamma = NULL;
-	free(s->red_gamma);
-	s->red_gamma = NULL;
-	free(s->green_gamma);
-	s->green_gamma = NULL;
-	free(s->blue_gamma);
-	s->blue_gamma = NULL;
-}
-
-SANE_Status CS4400F_setup(CS4400F_Scanner *s)
-{
-	const int gamma_len = 256;
-	float default_gamma = 1.0;
-
-	/* Scanner properties */
-
-	s->sources      = cs4400f_sources;
-	s->source_names = cs4400f_source_names;
-	s->modes        = cs4400f_modes;
-	s->mode_names   = cs4400f_mode_names;
-	s->bit_depths   = cs4400f_bit_depths;
-	s->resolutions  = cs4400f_resolutions;
-
-	s->x_limit      = cs4400f_x_limit;
-	s->y_limit      = cs4400f_y_limit;
-	s->y_calpos     = cs4400f_y_calpos;
-
-	s->x_limit_ta   = cs4400f_x_limit_ta;
-	s->y_limit_ta   = cs4400f_y_limit_ta;
-	s->y_calpos_ta  = cs4400f_y_calpos_ta;
-
-	/* Generic settings */
-
-	s->source = LAMP_PLATEN;
-	s->lamp_to_lim = (SANE_Range){ 0, 15, 0 };
-	s->lamp_timeout = 4;
-
-	s->x_scan_lim.min = SANE_FIX(0.0);
-	s->x_scan_lim.max = s->x_limit.max - s->x_limit.min,
-	s->x_scan_lim.quant = 0;
-
-	s->y_scan_lim.min = SANE_FIX(0.0);
-	s->y_scan_lim.max = s->y_limit.max - s->y_limit.min,
-	s->y_scan_lim.quant = 0;
-
-	s->tl_x = SANE_FIX(0.0);
-	s->tl_y = SANE_FIX(0.0);
-	s->br_x = s->x_scan_lim.max;
-	s->br_y = s->y_scan_lim.max;
-
-	s->mode = SANE_FRAME_RGB;
-	s->depth = 16;
-
-	s->x_dpi = 300;
-	s->y_dpi = 300;
-
-	s->use_gamma = SANE_FALSE;
-	s->gamma_range  = (SANE_Range){ 0, 65535, 0 };
-	s->gamma_len = gamma_len;
-	CHK_MEM(s->gray_gamma = create_gamma(gamma_len, default_gamma));
-	CHK_MEM(s->red_gamma = create_gamma(gamma_len, default_gamma));
-	CHK_MEM(s->green_gamma = create_gamma(gamma_len, default_gamma));
-	CHK_MEM(s->blue_gamma = create_gamma(gamma_len, default_gamma));
-
-	s->bw_range = (SANE_Range){ SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-	s->bw_threshold = SANE_FIX(50.0);
-	s->bw_hysteresis = SANE_FIX(0.0);
-
-	s->is_scanning = SANE_FALSE;
-
-	return SANE_STATUS_GOOD;
-
-chk_mem_failed:
-	cleanup_options(s);
-	return SANE_STATUS_NO_MEM;
-}
+/* Functions */
 
 static size_t max_string_size(const SANE_String_Const *strings)
 {
@@ -323,10 +249,104 @@ static int find_constraint_value(SANE_Word v, const SANE_Word *values)
 	return 1;
 }
 
-static SANE_Status init_options(CS4400F_Scanner *s)
+static SANE_Word *create_gamma(int N, float gamma)
+{
+	int k;
+	SANE_Word *g;
+
+	if (gamma < 0.01)
+		gamma = 0.01;
+	g = malloc(N * sizeof(SANE_Word));
+	if (!g)
+		return NULL;
+
+	for (k = 0; k < N; k++) {
+		g[k] = (uint16_t) (65535 * powf((float)k / N, 1/gamma) + 0.5);
+	}
+	return g;
+}
+
+static void destroy_CS4400F(CS4400F_Scanner *s)
+{
+	if (!s)
+		return;
+
+	free(s->gray_gamma);
+	free(s->red_gamma);
+	free(s->green_gamma);
+	free(s->blue_gamma);
+
+	/* TODO: Destroy gl843_device */
+
+	memset(s, 0, sizeof(*s));
+	free(s);
+}
+
+CS4400F_Scanner *create_CS4400F(unsigned int bus, unsigned int adr)
 {
 	int i;
+	const int gamma_len = 256;
+	float default_gamma = 1.0;
 	SANE_Option_Descriptor *opt;
+	CS4400F_Scanner *s;
+
+	CHK_MEM(s = calloc(sizeof(CS4400F_Scanner), 1));
+
+	/** Scanner properties **/
+
+	s->sources      = cs4400f_sources;
+	s->source_names = cs4400f_source_names;
+	s->modes        = cs4400f_modes;
+	s->mode_names   = cs4400f_mode_names;
+	s->bit_depths   = cs4400f_bit_depths;
+	s->resolutions  = cs4400f_resolutions;
+
+	s->x_limit      = cs4400f_x_limit;
+	s->y_limit      = cs4400f_y_limit;
+	s->y_calpos     = cs4400f_y_calpos;
+
+	s->x_limit_ta   = cs4400f_x_limit_ta;
+	s->y_limit_ta   = cs4400f_y_limit_ta;
+	s->y_calpos_ta  = cs4400f_y_calpos_ta;
+
+	/** Scanning settings **/
+
+	s->source = LAMP_PLATEN;
+	s->lamp_to_lim = (SANE_Range){ 0, 15, 0 };
+	s->lamp_timeout = 4;
+
+	s->x_scan_lim.min = SANE_FIX(0.0);
+	s->x_scan_lim.max = s->x_limit.max - s->x_limit.min,
+	s->x_scan_lim.quant = 0;
+
+	s->y_scan_lim.min = SANE_FIX(0.0);
+	s->y_scan_lim.max = s->y_limit.max - s->y_limit.min,
+	s->y_scan_lim.quant = 0;
+
+	s->tl_x = SANE_FIX(0.0);
+	s->tl_y = SANE_FIX(0.0);
+	s->br_x = s->x_scan_lim.max;
+	s->br_y = s->y_scan_lim.max;
+
+	s->mode = SANE_FRAME_RGB;
+	s->depth = 16;
+
+	s->x_dpi = 300;
+	s->y_dpi = 300;
+
+	s->use_gamma = SANE_FALSE;
+	s->gamma_range  = (SANE_Range){ 0, 65535, 0 };
+	s->gamma_len = gamma_len;
+	CHK_MEM(s->gray_gamma = create_gamma(gamma_len, default_gamma));
+	CHK_MEM(s->red_gamma = create_gamma(gamma_len, default_gamma));
+	CHK_MEM(s->green_gamma = create_gamma(gamma_len, default_gamma));
+	CHK_MEM(s->blue_gamma = create_gamma(gamma_len, default_gamma));
+
+	s->bw_range = (SANE_Range){ SANE_FIX(0.0), SANE_FIX(100.0), 0 };
+	s->bw_threshold = SANE_FIX(50.0);
+	s->bw_hysteresis = SANE_FIX(0.0);
+
+	/** SANE options **/
 
 	for (i = 0; i < OPT_NUM_OPTIONS; i++)
 		s->opt[i].cap = SANE_CAP_SOFT_SELECT | SANE_CAP_SOFT_DETECT;
@@ -550,49 +570,59 @@ static SANE_Status init_options(CS4400F_Scanner *s)
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
 	opt->constraint.range = &s->gamma_range;
 
-	return SANE_STATUS_GOOD;
-}
+	return s;
 
-static void destroy_sane_device(SANE_Device *dev)
-{
-	if (dev) {
-		free((void *)dev->name);
-		free((void *)dev->vendor);
-		free((void *)dev->model);
-		free((void *)dev->type);
-		free(dev);
-	}
-}
-
-static SANE_Device *create_cs4400f_sane_device(int bus, int addr)
-{
-	int ret;
-	SANE_Device *dev;
-
-	CHK_MEM(dev = calloc(sizeof(*dev), 1));
-	CHK(asprintf((char **) &dev->name, "CanoScan 4400F %03d:%03d", bus, addr));
-		goto chk_mem_failed;
-	CHK_MEM(dev->vendor = strdup("CANON"));
-	CHK_MEM(dev->model = strdup("CanoScan 4400F"));
-	CHK_MEM(dev->type = strdup(SANE_I18N("flatbed scanner")));
-	return dev;
-
-chk_failed:
 chk_mem_failed:
 	DBG(DBG_error0, "Out of memory\n");
-	destroy_sane_device(dev);
+	destroy_CS4400F(s);
 	return NULL;
 }
 
-static void destroy_sane_device_list(SANE_Device **device_list)
+static void free_sane_usb_dev(SANE_USB_Device *s)
 {
-	int i = 0;
-	if (device_list) {
-		for (i = 0; device_list[i] != NULL; i++) {
-			destroy_sane_device(device_list[i]);
-		}
-		free(device_list);
-	}
+	if (!s)
+		return;
+
+	libusb_unref_device(s->usb_dev);
+	free((void*)s->sane_dev.name);
+	memset(s, 0, sizeof(*s));
+	free(s);
+}
+
+static SANE_USB_Device *mk_sane_usb_dev(const Scanner_Model *model,
+					libusb_device *usbdev)
+{
+	int ret;
+	SANE_USB_Device *d;
+
+	CHK_MEM(d = calloc(sizeof(*d), 1));
+
+	CHK(asprintf((char **) &d->sane_dev.name, "%s:%03d:%03d", model->name,
+		libusb_get_bus_number(usbdev), libusb_get_device_address(usbdev)));
+
+	d->sane_dev.vendor = model->vendor;
+	d->sane_dev.model = model->model;
+	d->sane_dev.type = model->type;
+	d->usb_dev = libusb_ref_device(usbdev);
+	return d;
+
+chk_failed:
+chk_mem_failed:
+	free_sane_usb_dev(d);
+	return NULL;
+}
+
+static void free_sane_usb_devs(SANE_USB_Device **devs)
+{
+	SANE_USB_Device **d;
+
+	if (!devs)
+		return;
+
+	for (d = devs; *d != NULL; d++)
+		free_sane_usb_dev(*d);
+
+	free(devs);
 }
 
 #ifndef DRIVER_BUILD
@@ -607,7 +637,7 @@ SANE_Status sane_init(SANE_Int* version_code,
 	if (version_code)
 		*version_code = SANE_VERSION_CODE(1,0,DRIVER_BUILD);
 
-	g_device_list = NULL;
+	g_scanners = NULL;
 
 	init_debug("GL843", -1);
 	ret = libusb_init(&g_libusb_ctx);
@@ -629,53 +659,68 @@ void sane_exit()
 		libusb_exit(g_libusb_ctx);
 		g_libusb_ctx = NULL;
 	}
-	destroy_sane_device_list(g_device_list);
+	free_sane_usb_devs(g_scanners);
 }
 
 SANE_Status sane_get_devices(const SANE_Device ***device_list,
 			     SANE_Bool local_only)
 {
 	int ret;
-	int i, n, m;
-	struct libusb_device **usb_devs = NULL;
+	int i, n;
+	struct libusb_device **usbdevs = NULL;
 
-	CHK(n = libusb_get_device_list(g_libusb_ctx, &usb_devs));
+	/* Clear current device list */
 
-	destroy_sane_device_list(g_device_list);
-	/* Create empty list */
-	g_device_list = malloc(sizeof(SANE_Device*));
-	m = 0;
+	free_sane_usb_devs(g_scanners);
+	CHK_MEM(g_scanners = calloc(sizeof(SANE_USB_Device*), 1));
 
-	/* Find matching devices */
-	for (i = 0; i < n; i++) {
+	/* Scan all USB devices */
+
+	CHK(libusb_get_device_list(g_libusb_ctx, &usbdevs));
+
+	n = 0;
+	for (i = 0; usbdevs[i] != NULL; i++) {
+
 		struct libusb_device_descriptor dd;
+		SANE_USB_Device **tmp;
+		const Scanner_Model *m;
 
-		CHK(libusb_get_device_descriptor(usb_devs[i], &dd));
-		if (dd.idVendor == CS4400F_VID && dd.idProduct == CS4400F_PID) {
-			/* Add device with matching product- and vendor-IDs */
-			CHK_MEM(g_device_list = realloc(g_device_list,
-				sizeof(SANE_Device*) * (m + 2)));
-			g_device_list[m] = create_cs4400f_sane_device(
-				libusb_get_bus_number(usb_devs[i]),
-				libusb_get_device_address(usb_devs[i]));
-			m++;
+		/* Find matching scanner model */
+
+		CHK(libusb_get_device_descriptor(usbdevs[i], &dd));
+
+		for (m = g_known_models; m->vid != 0; m++) {
+			if (m->vid == dd.idVendor && m->pid == dd.idProduct)
+				break;
 		}
+		if (m->vid == 0)
+			continue;
+
+		/* Enumerate found scanner */
+
+		DBG(DBG_proc, "found USB device 0x%04x:0x%04x\n",
+			dd.idVendor, dd.idProduct);
+
+		CHK_MEM(tmp = realloc(g_scanners, (n+2)*sizeof(*tmp)));
+		g_scanners = tmp;
+		CHK_MEM(g_scanners[n] = mk_sane_usb_dev(m, usbdevs[i]));
+		n++;
 	}
+	g_scanners[n] = NULL; /* Add list terminator */
 
-	g_device_list[m] = NULL; /* Last entry is NULL. */
-
-	libusb_free_device_list(usb_devs, 1);
 	if (device_list)
-		*device_list = (const SANE_Device **) g_device_list;
+		*device_list = (SANE_Device **) g_scanners;
 
+	libusb_free_device_list(usbdevs, 1);
 	return SANE_STATUS_GOOD;
 
 chk_mem_failed:
-	return SANE_STATUS_NO_MEM;
+	ret = LIBUSB_ERROR_NO_MEM;
 chk_failed:
-	if (usb_devs)
-		libusb_free_device_list(usb_devs, 1);
-	DBG(DBG_error0, "Device enumeration failed: %s\n",
+	if (usbdevs)
+		libusb_free_device_list(usbdevs, 1);
+	free_sane_usb_devs(g_scanners);
+	DBG(DBG_error, "Device enumeration failed: %s\n",
 		sanei_libusb_strerror(ret));
 	return SANE_STATUS_IO_ERROR;
 }
@@ -685,23 +730,32 @@ SANE_Status sane_open(SANE_String_Const devicename,
 {
 	int i;
 	int ret;
-	SANE_Device *dev = NULL;
+	SANE_USB_Device *dev = NULL;
 
-	if (g_device_list == NULL)
+	if (g_scanners == NULL)
 		CHK_SANE(sane_get_devices(NULL, SANE_TRUE));
 
+	/* Find scanner in device list */
+
 	if (strlen(devicename) == 0 || strcmp(devicename, "auto") == 0) {
-		dev = g_device_list[0];
+		dev = g_scanners[0];
 	} else {
-		for (i = 0; g_device_list[i] != NULL; i++) {
-			if (strcmp(devicename, g_device_list[i]->name) == 0) {
-				dev = g_device_list[i];
+		for (i = 0; g_scanners[i] != NULL; i++) {
+			if (strcmp(devicename, g_scanners[i]->sane_dev.name) == 0) {
+				dev = g_scanners[i];
+				break;
 			}
 		}
 	}
 	if (dev == NULL) {
+		DBG(DBG_proc, "device not found\n");
 		return SANE_STATUS_INVAL; /* No device found */
 	}
+
+	/* Open USB interface */
+
+	DBG(DBG_proc, "opening %s\n", g_scanners[i]->sane_dev.name);
+
 
 	/* TODO: The rest ... */
 
@@ -818,8 +872,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 		if (value == NULL)
 			return SANE_STATUS_INVAL;
 
-		if (s->is_scanning)
-			return SANE_STATUS_DEVICE_BUSY;
+//		if (s->is_scanning)
+//				return SANE_STATUS_DEVICE_BUSY;
 
 		if (!SANE_OPTION_IS_ACTIVE(opt->cap)
 				|| !SANE_OPTION_IS_SETTABLE(opt->cap))
