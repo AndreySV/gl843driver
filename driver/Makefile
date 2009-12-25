@@ -1,7 +1,8 @@
 BACKEND = gl843
 OBJS = cs4400f.o low.o util.o main.o sanei.o scan.o
 
-CPPFLAGS = -DDRIVER_BUILD=0 -shared -fPIC -fvisibility=hidden -Wall
+CPPFLAGS = -DDRIVER_BUILD=0 -shared -fPIC -fvisibility=hidden -Wall \
+	-fno-stack-protector
 
 %.o: %.c
 	@echo CC $^
