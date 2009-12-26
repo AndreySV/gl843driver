@@ -88,7 +88,7 @@ int __attribute__ ((pure)) host_is_big_endian(void);
 int __attribute__ ((pure)) host_is_little_endian(void);
 void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len);
 
-int mm_to_px(float start, float end, int dpi, int *offset);
+int mm_to_px(SANE_Fixed start, SANE_Fixed end, int dpi, int *offset);
 float __attribute__ ((pure)) satf(float v, float min, float max);
 
 #endif /* _GL843_UTIL_H_ */

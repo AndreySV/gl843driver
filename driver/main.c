@@ -122,11 +122,8 @@ enum Scanner_Option
 
 /* CanoScan 4400F properties */
 
-#define CS4400F_VID 0x04a9
-#define CS4400F_PID 0x2228
-
 #define SANE_VALUE_SCAN_SOURCE_PLATEN	SANE_I18N("Flatbed")
-#define SANE_VALUE_SCAN_SOURCE_TA	SANE_I18N("Transparency Adapter")
+#define SANE_VALUE_SCAN_SOURCE_TA	SANE_I18N("Film")
 
 const SANE_Int cs4400f_sources[] = { 2, LAMP_PLATEN, LAMP_TA };
 const SANE_String_Const cs4400f_source_names[] = {
@@ -136,12 +133,16 @@ const SANE_String_Const cs4400f_mode_names[] = {
 	SANE_VALUE_SCAN_MODE_GRAY, SANE_VALUE_SCAN_MODE_COLOR, NULL };
 const SANE_Int cs4400f_bit_depths[]  = { 2, 8, 16 };
 const SANE_Int cs4400f_resolutions[] = { 5, 75, 150, 300, 600, 1200 };
-const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(210.0), 0 };
-const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(297.0), 0 };
+const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(220.0), 0 };
+const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(300.0), 0 };
+const SANE_Fixed cs4400f_x_start     = SANE_FIX(0.0);  /* Platen left edge */
+const SANE_Fixed cs4400f_y_start     = SANE_FIX(10.0); /* Platen top edge */
 const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
-const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(100.0), 0 };
-const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
+const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(24.0), 0 };
+const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(226.0), 0 };
+const SANE_Fixed cs4400f_x_start_ta  = SANE_FIX(97.0);  /* TA left edge */
+const SANE_Fixed cs4400f_y_start_ta  = SANE_FIX(31.0); /* TA top edge */
+const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(13.0);
 
 typedef struct
 {
@@ -162,12 +163,16 @@ typedef struct
 
 	SANE_Range x_limit;	/* Platen left/right edges [mm] */
 	SANE_Range y_limit;	/* Platen top/bottom edges [mm] */
+	SANE_Fixed x_start;	/* Platen left edge offset from CCD start */
+	SANE_Fixed y_start;	/* Platen top edge offset from home position */
 	SANE_Fixed y_calpos;	/* White calibration position [mm] */
 
 	/* Transparency adapter format */
 
 	SANE_Range x_limit_ta;	/* TA left/right edges [mm] */
 	SANE_Range y_limit_ta;	/* TA top/bottom edges [mm] */
+	SANE_Fixed x_start_ta;	/* TA left edge offset from CCD start */
+	SANE_Fixed y_start_ta;	/* TA top edge offset from home position */
 	SANE_Fixed y_calpos_ta;	/* White calibration position [mm] */
 
 	/* Current scan area */
@@ -305,10 +310,14 @@ static CS4400F_Scanner *create_CS4400F()
 
 	s->x_limit      = cs4400f_x_limit;
 	s->y_limit      = cs4400f_y_limit;
+	s->x_start      = cs4400f_x_start;
+	s->y_start      = cs4400f_y_start;
 	s->y_calpos     = cs4400f_y_calpos;
 
 	s->x_limit_ta   = cs4400f_x_limit_ta;
 	s->y_limit_ta   = cs4400f_y_limit_ta;
+	s->x_start_ta   = cs4400f_x_start_ta;
+	s->y_start_ta   = cs4400f_y_start_ta;
 	s->y_calpos_ta  = cs4400f_y_calpos_ta;
 
 	/** Scanning settings **/
@@ -580,6 +589,33 @@ chk_mem_failed:
 	return NULL;
 }
 
+static void dump_scan_settings(CS4400F_Scanner *s)
+{
+	int i, j;
+	SANE_Parameters p;
+
+	i = find_constraint_value(s->mode, s->modes) - 1;
+	j = find_constraint_value(s->source, s->sources) - 1;
+	sane_get_parameters(s, &p);
+
+	DBG(DBG_trace, "Current scanning settings\n");
+	DBG(DBG_trace, "-------------------------\n");
+	DBG(DBG_trace, "       mode: %s\n", s->mode_names[i]);
+	DBG(DBG_trace, "     source: %s\n", s->source_names[j]);
+	DBG(DBG_trace, "      depth: %d [bits]\n", s->depth);
+	DBG(DBG_trace, " resolution: %d [dpi]\n", s->x_dpi);
+	DBG(DBG_trace, "        top: %.1f [mm]\n", SANE_UNFIX(s->tl_y));
+	DBG(DBG_trace, "       left: %.1f [mm]\n", SANE_UNFIX(s->tl_x));
+	DBG(DBG_trace, "     bottom: %.1f [mm]\n", SANE_UNFIX(s->br_y));
+	DBG(DBG_trace, "      right: %.1f [mm]\n", SANE_UNFIX(s->br_x));
+	DBG(DBG_trace, "gamma corr.: %s\n", s->use_gamma ? "yes" : "no");
+	DBG(DBG_trace, "-------------------------\n");
+	DBG(DBG_trace, "pixels/line: %d\n", p.pixels_per_line);
+	DBG(DBG_trace, " bytes/line: %d\n", p.bytes_per_line);
+	DBG(DBG_trace, "      lines: %d\n", p.lines);
+	DBG(DBG_trace, "-------------------------\n");
+}
+
 static void free_sane_usb_dev(SANE_USB_Device *s)
 {
 	if (!s)
@@ -727,7 +763,7 @@ chk_failed:
 	return SANE_STATUS_IO_ERROR;
 }
 
-void destroy_scanner(CS4400F_Scanner *s)
+static void destroy_scanner(CS4400F_Scanner *s)
 {
 	if (!s)
 		return;
@@ -739,7 +775,7 @@ void destroy_scanner(CS4400F_Scanner *s)
 	free(s);
 }
 
-SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scanner)
+static SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scanner)
 {
 	int ret;
 	libusb_device_handle *h;
@@ -805,6 +841,7 @@ void sane_close(SANE_Handle handle)
 {
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	if (s) {
+		dump_scan_settings(s);
 		// TODO: Reset scanner
 		destroy_scanner(s);
 	}
@@ -1046,7 +1083,10 @@ SANE_Status sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
 
 SANE_Status sane_start(SANE_Handle handle)
 {
-//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+
+	dump_scan_settings(s);
+
 	return SANE_STATUS_UNSUPPORTED;
 }
 

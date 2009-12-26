@@ -136,13 +136,13 @@ void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len)
 }
 
 /* Convert millimeters to pixels. */
-int mm_to_px(float start, float end, int dpi, int *offset)
+int mm_to_px(SANE_Fixed start, SANE_Fixed end, int dpi, int *offset)
 {
 	int size;
 
-	size = (end - start) / 25.4 * dpi;
+	size = (SANE_UNFIX(end) - SANE_UNFIX(start)) / 25.4 * dpi;
 	if (offset)
-		*offset = start / 25.4 * dpi;
+		*offset = SANE_UNFIX(start) / 25.4 * dpi;
 	return size;
 }
 
