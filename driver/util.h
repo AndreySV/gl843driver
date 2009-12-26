@@ -49,16 +49,17 @@
 			goto chk_mem_failed;	\
 	} while (0)
 
-#define DBG_error0      0	/* unfilterable messages */
-#define DBG_error       1	/* fatal errors */
-#define DBG_msg         2	/* scanner workflow messages */
-#define DBG_warn        3	/* warnings and non-fatal errors */
-#define DBG_info        4	/* informational messages */
+#define DBG_error0	0	/* unfilterable messages */
+#define DBG_error	1	/* fatal errors */
+#define DBG_msg		2	/* scanner workflow messages */
+#define DBG_warn	3	/* warnings and non-fatal errors */
+#define DBG_info	4	/* informational messages */
 #define DBG_api		5	/* SANE API entry/exits */
-#define DBG_proc        6	/* starting/finishing functions */
-#define DBG_io          7	/* io functions */
-#define DBG_io2         8	/* io functions that are called very often */
-#define DBG_data        9	/* log image data */
+#define DBG_trace	6	/* Driver tracing */
+#define DBG_trace2	7	/* Verbose driver tracing */
+#define DBG_io		8	/* io functions */
+#define DBG_io2		9	/* io functions that are called very often */
+#define DBG_data	10	/* log image data */
 
 #define DBG(level, msg, ...)	\
 	vprintf_dbg(level, __func__, 0, msg, ##__VA_ARGS__)
