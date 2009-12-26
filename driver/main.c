@@ -21,7 +21,9 @@
 #include <sane/sane.h>
 #include <sane/saneopts.h>
 
+#include "low.h"
 #include "sanei.h"
+#include "util.h"
 
 /** Option_Value union
  *  *
@@ -59,7 +61,7 @@ typedef struct
 typedef struct
 {
 	SANE_Device sane_dev;
-	libusb_device *usb_dev;
+	libusb_device *usbdev;
 
 } SANE_USB_Device;
 
@@ -144,7 +146,7 @@ const SANE_Fixed cs4400f_y_calpos_ta = SANE_FIX(5.0);
 typedef struct
 {
 	enum scanner_state state;
-	struct gl843_device *hw_dev;
+	struct gl843_device *hw;
 
 	SANE_Option_Descriptor opt[OPT_NUM_OPTIONS];
 
@@ -282,7 +284,7 @@ static void destroy_CS4400F(CS4400F_Scanner *s)
 	free(s);
 }
 
-CS4400F_Scanner *create_CS4400F(unsigned int bus, unsigned int adr)
+static CS4400F_Scanner *create_CS4400F()
 {
 	int i;
 	const int gamma_len = 256;
@@ -583,7 +585,7 @@ static void free_sane_usb_dev(SANE_USB_Device *s)
 	if (!s)
 		return;
 
-	libusb_unref_device(s->usb_dev);
+	libusb_unref_device(s->usbdev);
 	free((void*)s->sane_dev.name);
 	memset(s, 0, sizeof(*s));
 	free(s);
@@ -603,7 +605,7 @@ static SANE_USB_Device *mk_sane_usb_dev(const Scanner_Model *model,
 	d->sane_dev.vendor = model->vendor;
 	d->sane_dev.model = model->model;
 	d->sane_dev.type = model->type;
-	d->usb_dev = libusb_ref_device(usbdev);
+	d->usbdev = libusb_ref_device(usbdev);
 	return d;
 
 chk_failed:
@@ -698,7 +700,7 @@ SANE_Status sane_get_devices(const SANE_Device ***device_list,
 
 		/* Enumerate found scanner */
 
-		DBG(DBG_proc, "found USB device 0x%04x:0x%04x\n",
+		DBG(DBG_trace, "found USB device 0x%04x:0x%04x\n",
 			dd.idVendor, dd.idProduct);
 
 		CHK_MEM(tmp = realloc(g_scanners, (n+2)*sizeof(*tmp)));
@@ -709,7 +711,7 @@ SANE_Status sane_get_devices(const SANE_Device ***device_list,
 	g_scanners[n] = NULL; /* Add list terminator */
 
 	if (device_list)
-		*device_list = (SANE_Device **) g_scanners;
+		*device_list = (const SANE_Device **)g_scanners;
 
 	libusb_free_device_list(usbdevs, 1);
 	return SANE_STATUS_GOOD;
@@ -725,12 +727,50 @@ chk_failed:
 	return SANE_STATUS_IO_ERROR;
 }
 
+void destroy_scanner(CS4400F_Scanner *s)
+{
+	if (!s)
+		return;
+	if (s->hw) {
+		libusb_close(s->hw->usbdev);
+		destroy_gl843dev(s->hw);
+	}
+	memset(s, 0, sizeof(*s));
+	free(s);
+}
+
+SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scanner)
+{
+	int ret;
+	libusb_device_handle *h;
+	CS4400F_Scanner *s = NULL;
+
+	CHK(libusb_open(usbdev, &h));
+	CHK(libusb_set_configuration(h, 1));
+	CHK(libusb_claim_interface(h, 0));
+	CHK_MEM(s = create_CS4400F());
+	CHK_MEM(s->hw = create_gl843dev(h));
+
+	*scanner = s;
+	return SANE_STATUS_GOOD;
+
+chk_mem_failed:
+	destroy_scanner(s);
+	return SANE_STATUS_NO_MEM;
+chk_failed:
+	destroy_scanner(s);
+	return SANE_STATUS_IO_ERROR;
+}
+
 SANE_Status sane_open(SANE_String_Const devicename,
 		      SANE_Handle *handle)
 {
 	int i;
 	int ret;
 	SANE_USB_Device *dev = NULL;
+	CS4400F_Scanner *s;
+
+	DBG(DBG_trace, "opening %s.\n", devicename);
 
 	if (g_scanners == NULL)
 		CHK_SANE(sane_get_devices(NULL, SANE_TRUE));
@@ -747,20 +787,15 @@ SANE_Status sane_open(SANE_String_Const devicename,
 			}
 		}
 	}
+
 	if (dev == NULL) {
-		DBG(DBG_proc, "device not found\n");
+		DBG(DBG_trace, "device not found\n");
 		return SANE_STATUS_INVAL; /* No device found */
 	}
 
-	/* Open USB interface */
-
-	DBG(DBG_proc, "opening %s\n", g_scanners[i]->sane_dev.name);
-
-
-	/* TODO: The rest ... */
-
-//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
-	return SANE_STATUS_UNSUPPORTED;
+	CHK_SANE(create_scanner(dev->usbdev, &s));
+	*handle = s;
+	return SANE_STATUS_GOOD;
 
 chk_sane_failed:
 	return ret;
@@ -768,7 +803,11 @@ chk_sane_failed:
 
 void sane_close(SANE_Handle handle)
 {
-//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	if (s) {
+		// TODO: Reset scanner
+		destroy_scanner(s);
+	}
 }
 
 const SANE_Option_Descriptor *sane_get_option_descriptor(SANE_Handle handle,
@@ -813,13 +852,16 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			return SANE_STATUS_INVAL;
 
 		switch (option) {
+		case OPT_NUM_OPTS:
+			val->w = OPT_NUM_OPTIONS;
+			break;
 		case OPT_MODE:
 			i = find_constraint_value(s->mode, s->modes) - 1;
-			strcpy(val->s, s->mode_names[i]);
+			strcpy(value, s->mode_names[i]);
 			break;
 		case OPT_SOURCE:
 			i = find_constraint_value(s->source, s->sources) - 1;
-			strcpy(val->s, s->source_names[i]);
+			strcpy(value, s->source_names[i]);
 			break;
 		case OPT_BIT_DEPTH:
 			val->w = s->depth;
@@ -885,12 +927,12 @@ SANE_Status sane_control_option(SANE_Handle handle,
 
 		switch (option) {
 		case OPT_MODE:
-			i = find_constraint_string(val->s, s->mode_names);
+			i = find_constraint_string(value, s->mode_names);
 			s->mode = s->modes[i+1];
 			flags |= SANE_INFO_RELOAD_PARAMS;
 			break;
 		case OPT_SOURCE:
-			i = find_constraint_string(val->s, s->source_names);
+			i = find_constraint_string(value, s->source_names);
 			s->source = s->sources[i+1];
 			flags |= SANE_INFO_RELOAD_PARAMS;
 			break;
