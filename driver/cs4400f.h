@@ -46,7 +46,7 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 			int linesel,
 			int tgtime, int lperiod,
 			int expr, int expg, int expb);
-int set_postprocessing(struct gl843_device *dev);
+int select_shading(struct gl843_device *dev, enum gl843_shading mode);
 void set_motor(struct gl843_device *dev);
 void setup_scanner(struct gl843_device *dev);
 

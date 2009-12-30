@@ -646,8 +646,7 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 			/* lperiod */ 11640,
 			/* expr,g,b */ 40000, 40000, 40000));
 
-	set_postprocessing(dev);
-	CHK(flush_regs(dev));
+	CHK(select_shading(dev, SHADING_CORR_OFF));
 
 	set_reg(dev, GL843_MTRREV, 0);
 	set_reg(dev, GL843_NOTHOME, 0);

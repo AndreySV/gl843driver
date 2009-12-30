@@ -17,6 +17,7 @@
 #include <stdio.h> /* printf() */
 #include <stdint.h>
 #include <math.h>
+#include <sane/sane.h>
 #include "util.h"
 #include "low.h"
 #include "scan.h"
@@ -199,6 +200,7 @@ int do_base_configuration(struct gl843_device *dev)
 		/* Misc */
 
 		{ GL843_HOMENEG, 0 },	/* 0x02: home sensor polarity */
+		{ GL843_AVEENB, 1 }, 	/* 0x03: X scaling: 1=avg, 0=del */
 		{ GL843_BUFSEL, 16 },	/* 0x20: buffer-full threshold */
 		{ GL843_BACKSCAN, 0 },	/* 0x09 */
 
@@ -250,6 +252,9 @@ int do_base_configuration(struct gl843_device *dev)
 
 		/* Other unused functions */
 
+		/* 0x01 */
+		{ GL843_STAGGER, 0 },	/* double shading */
+		{ GL843_COMPENB, 0 },	/* enable compression */
 		/* 0x06 */
 		{ GL843_OPTEST, 0 },
 		/* 0x09 */
@@ -563,24 +568,13 @@ chk_failed:
 	return ret;
 }
 
-int set_postprocessing(struct gl843_device *dev)
+int select_shading(struct gl843_device *dev, enum gl843_shading mode)
 {
 	int ret;
-	int dvdset = 0, shdarea = 0, aveenb = 0;
-	/* Postprocessing encompasses all pixel processing between
-	 * the analog front end (AFE) and USB interface */
-	struct regset_ent postprocessing[] = {
-		/* 0x01 */
-		{ GL843_DVDSET, dvdset },
-		{ GL843_STAGGER, 0 },
-		{ GL843_COMPENB, 0 },
-		{ GL843_SHDAREA, shdarea },
-		/* 0x03 */
-		{ GL843_AVEENB, aveenb }, 	/* X scaling: 1=avg, 0=del */
-		/* 0x06 */
-		{ GL843_GAIN4, 0 },		/* 0/1: shading gain of 4/8. */
-	};
-	CHK(write_regs(dev, postprocessing, ARRAY_SIZE(postprocessing)));
+	set_reg(dev, GL843_DVDSET, mode != SHADING_CORR_OFF);	/* 0x01 */
+	set_reg(dev, GL843_SHDAREA, mode == SHADING_CORR_AREA); /* 0x01 */
+	set_reg(dev, GL843_GAIN4, 0); /* 0x06: 0/1: shading gain of 4/8. */
+	CHK(flush_regs(dev));
 	ret = 0;
 chk_failed:
 	return ret;

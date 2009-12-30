@@ -25,6 +25,12 @@ enum gl843_lamp {
 	LAMP_TA		/* Transparency adapter lamp */
 };
 
+enum gl843_shading {
+	SHADING_CORR_OFF,	/* Disable shading correction */
+	SHADING_CORR_AREA,	/* Enable area shading correction */
+	SHADING_CORR_LINE	/* Enable full-line shading correction */
+};
+
 enum gl843_sysclk {
 	SYSCLK_24_MHZ = 0,
 	SYSCLK_30_MHZ = 1,
