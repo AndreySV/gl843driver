@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <math.h>
 #include <string.h>
+#include <sane/sane.h>
 #include "low.h"
 #include "cs4400f.h"
 #include "util.h"
