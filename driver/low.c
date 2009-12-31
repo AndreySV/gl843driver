@@ -19,6 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <libusb-1.0/libusb.h>
+#include <sane/sane.h>
 #define GL843_PRIVATE
 #include "low.h"
 #include "util.h"
