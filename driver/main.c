@@ -63,7 +63,7 @@ const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(220.0), 0 };
 const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(300.0), 0 };
 const SANE_Fixed cs4400f_x_start     = SANE_FIX(0.0);  /* Platen left edge */
 const SANE_Fixed cs4400f_y_start     = SANE_FIX(10.0); /* Platen top edge */
-const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
+const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(7.0);
 const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(24.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(226.0), 0 };
 const SANE_Fixed cs4400f_x_start_ta  = SANE_FIX(97.0);  /* TA left edge */
@@ -945,6 +945,43 @@ SANE_Status sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
 SANE_Status sane_start(SANE_Handle handle)
 {
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	SANE_Parameters p;
+	struct scan_setup ss = {};
+
+	sane_get_parameters(s, &p);
+
+	ss.fmt = s->depth * (s->mode == SANE_FRAME_RGB ? 3 : 1);
+	/* TODO: replace gl843_pixformat in lower layers with
+	 * SANE_Frame and depth once everything else works */
+	ss.dpi = s->x_dpi;	/* y_dpi = x_dpi for now. */
+	ss.afe_dpi = 1200; /* TODO: Set up properly */
+	ss.steptype = (ss.dpi <= 1200) ? HALF_STEP : QUARTER_STEP;
+	ss.start_x = mm_to_px(SANE_FIX(0.0), s->x_start + s->tl_x, s->x_dpi, NULL);
+	ss.width = p.pixels_per_line;
+	ss.start_y = mm_to_px(SANE_FIX(0.0), s->y_start + s->tl_y, s->x_dpi, NULL);
+	ss.height = p.lines;
+
+	ss.c_move = (ss.steptype == HALF_STEP) ? 180 : 90;
+	ss.c_scan = 5000; /* TODO */
+
+	if (s->source == LAMP_PLATEN) {
+		ss.linesel = (ss.dpi < 1200) ? 0 : 1;
+		ss.tgtime = 0;
+		ss.lperiod = 11640;	/* line period = 2^tgtime * lperiod */
+		ss.backtrack = (ss.dpi < 1200) ? 200 : 100;
+	} else if (s->source == LAMP_TA) {
+		ss.linesel = 0;
+		ss.tgtime = 1;
+		ss.lperiod = 44400;
+		ss.backtrack = (ss.dpi > 1200) ? 50 : 100;
+	} else {
+		DBG(DBG_error, "Invalid source, enum = %d\n", s->source);
+		return SANE_STATUS_INVAL;
+	}
+
+	ss.expr = 40000;
+	ss.expg = 40000;
+	ss.expb = 40000;
 
 	dump_scan_settings(s);
 

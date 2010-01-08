@@ -61,6 +61,23 @@ struct motor_accel {
 	uint16_t a[MTRTBL_SIZE];	/* The acceleration table */
 };
 
+struct scan_setup {
+	enum gl843_pixformat fmt;
+	int dpi;
+	int afe_dpi;
+	enum motor_steptype steptype;
+	int start_x;		/* Pixels from left edge */
+	int width;		/* Pixels per line */
+	int start_y;		/* Steps from top edge */
+	int height;		/* Lines */
+	int linesel;
+	int tgtime, lperiod;	/* line period = 2^tgtime * lperiod */
+	int expr, expg, expb;	/* Exposure time */
+	int c_move;
+	int c_scan;
+	int backtrack;		/* Backtracking steps */
+};
+
 extern int usleep();
 
 #endif /* _GL843_DEFS_H_ */

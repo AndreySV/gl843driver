@@ -518,7 +518,7 @@ int setup_ccd_and_afe(struct gl843_device *dev,
 		{ GL843_TGSTIME, 5 },	/*  TGSHLD * 2^TGSTIME */
 		{ GL843_TGWTIME, 5 },	/*  TGW * 2^TGWTIME */
 		/* 0x1E */
-		{ GL843_LINESEL, linesel }, /* 0 or 1 */
+		{ GL843_LINESEL, linesel },
 		/* 0x38,0x39 */
 		{ GL843_LPERIOD, lperiod },
 		/* 0x52,0x53,0x54,0x55,0x56,0x57,0x58
@@ -607,7 +607,7 @@ chk_failed:
  * quarter-step: c_min = 90 (1200 to 4800 dpi, film scanning)
  * eighth-step:  c_min = 50 (Not used)
  *
- * c_max = 13000 for all step sizes.
+ * c_max = 13000 (TODO: double check, number seems too low) for all step sizes.
  *
  * The motor will tend to stall if c < c_min (running too fast),
  * and skip steps if c > c_max (running too slow).
@@ -623,7 +623,10 @@ chk_failed:
  * CanoScan 4400F driver for Windows.
  *
  * Canon uses c_start = { 5617, 11234, 14298, 28597 or 24576 },
- * and exp = 1.5 or 2.0
+ * and exp = 1.5 or 2.0. Specifically 
+ * (c_start, exp) = (24576, 1.5) for tables 1,2 and 3 (scanning, backtracking)
+ * and one of (28597, 1.5), (14298, 2.0), (11234, 2.0) or (5617, 2.0)
+ * for table 4 (fast moving).
  */
 void build_accel_profile(struct motor_accel *m,
 			 uint16_t c_start,
@@ -649,9 +652,9 @@ void build_accel_profile(struct motor_accel *m,
 	}
 
 	if (n < 0) {
-		DBG(DBG_warn, "Cannot fit the acceleration profile into "
-			"MTRTBL_SIZE steps. c_start = %d, desired c_end = %d, "
-			"actual c_end = %d\n",
+		DBG(DBG_warn,
+			"Cannot fit the profile into MTRTBL_SIZE steps.\n"
+			"c_start = %d, desired c_end = %d, actual c_end = %d\n",
 			c_start, c_end, m->a[MTRTBL_SIZE-1]);
 		n = MTRTBL_SIZE;
 	}

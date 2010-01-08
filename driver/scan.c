@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 Andreas Robinson <andr345 at gmail dot com>
+ * Copyright (C) 2009-2010 Andreas Robinson <andr345 at gmail dot com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -178,6 +178,213 @@ static int move_carriage(struct gl843_device *dev, float d)
 	ret = 0;
 chk_failed:
 	return ret;
+}
+
+/* Ref: gl843 datasheet, FMOVNO register
+
+Scanning with fast feed (FASTFED = 1)   Direction: ----->
+
+     moving to scan start                         scanning
+
+          FEEDL                       scan start            scan stop
+speed       |                              .                     .
+  |     ____v_____                 SCANFED .       LINCNT        .
+  |    /          \    STOPTIM        |    .          |          .
+  |   /            \   (time,     ____v____.__________v__________.
+  |  / <- FMOVNO -> \   !steps)  /         .                      \
+  | /                \    |     /<- STEPNO .             FSHDEC -> \
+  |/__________________\___v____/___________.________________________\__ distance
+
+
+Scanning without fast feed (FASTFED = 0)   Direction : ----->
+
+                                      scan start            scan stop
+speed                                      .                     .
+  |                FEEDL                   .       LINCNT        .
+  |                  |                     .          |          .
+  |   _______________v_____________________.__________v__________.
+  |  /                                     .                      \
+  | / <- STEPNO                            .             FSHDEC -> \
+  |/_______________________________________.________________________\__ distance
+
+
+
+Moving home after scanning    Direction: <-----
+
+speed
+  |____________________________________________________________________ distance
+  |\                                                                /
+  | \                                                              /
+  |  \ <- DECSEL,                                       FMOVNO -> /
+  |   \   FMOVDEC or FMOVNO (see LONGCURV)                       /
+  |    \________________________________________________________/
+
+
+
+Scanner backtracking when the buffer is full
+
+  |     scan start        buffer full
+  |            .  FWDSTEP   .
+  |            .      |     .
+  |            .______v_____.       direction: ------>
+  |           /              \
+  |          / <-- STEPNO --> \
+  |_________/__________________\______
+  |         \                  /
+  |          \  <- FASTNO ->  /
+  |           \              /
+  |            \  BWDSTEP   /       direction: <-----
+  |             \    |     /
+  |              \___v____/
+
+STEPNO:  Number of acceleration steps before scanning,  in motor table 1.
+FASTNO:  Number of acceleration steps in backtracking,  in motor table 2.
+FSHDEC:  Number of deceleration steps after scanning,   in motor table 3.
+FMOVNO:  Number of acceleration steps for fast feeding, in motor table 4.
+FMOVDEC: Number of deceleration steps for auto-go-home, in motor table 5.
+LONGCURV: If 0, FMOVNO and table 4 control deceleration for auto-go-home.
+          If 1, FMOVDEC, and table 5 control deceleration for auto-go-home.
+          See "Wall-hitting protection" in GL843 datasheet.
+FEEDL:   Number of feeding steps.
+SCANFED: Number of feeding steps before scanning.
+LINCNT:  Number of lines (steps) to scan.
+FWDSTEP:
+BWDSTEP:
+STEPTIM: Multiplier for STEPNO, FASTNO, FSHDEC, FMOVNO, FMOVDEC,
+         SCANFED, FWDSTEP, and BWDSTEP
+         The actual number of steps in each table or register is
+         <step_count> * 2^STEPTIM.
+DECSEL:  Number of deceleration steps after touching home sensor.
+         (Actual number of steps is 2^DECSEL.)
+STEPSEL: Motor step type for tables 1, 2 and 3
+FSTPSEL: Motor step type for tables 4 and 5
+
+TODO: When are DECSEL and FMOVEDEC used?
+ It seems unlikely that both are used at the same time as they define
+ the same thing. Right?
+
+Other bits:
+TB3TB1:   When set, table 1 replaces table 3
+TB5TB1:   When set, table 2 replaces table 5
+MULSTOP:  STOPTIM multiplier.
+*/
+
+
+/* Create and send motor acceleration profiles to the scanner.
+ * Note: It is assumed that the head is in the home position.
+ */
+int setup_scanning_motor_profile(struct gl843_device *dev,
+				 struct scan_setup *ss)
+{
+	int ret;
+
+	struct motor_accel move; /* for moving out and home */
+	struct motor_accel scan; /* for scanning and backtracking */
+
+	const int scanfeed = 1020;
+	int feedl, z1mod, z2mod, lperiod;
+
+	lperiod = ss->lperiod << ss->tgtime;
+
+	build_accel_profile(&move, 28597, ss->c_move, 1.5);
+	build_accel_profile(&scan, 24576, ss->c_scan, 1.5);
+
+	struct regset_ent motor[] = {
+		{ GL843_STEPTIM, STEPTIM },
+		{ GL843_MULSTOP, 0 },
+		{ GL843_DECSEL, 1 },
+		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
+		/* Scanning (table 1, 2 and 3) */
+		{ GL843_STOPTIM, 31 },
+		{ GL843_STEPSEL, ss->steptype },
+		{ GL843_STEPNO, scan.alen >> STEPTIM },
+		{ GL843_FSHDEC, scan.alen >> STEPTIM },
+		{ GL843_FASTNO, scan.alen >> STEPTIM },
+		/* Fast moving (table 4) */
+		{ GL843_FSTPSEL, ss->steptype },
+		{ GL843_FMOVNO, move.alen >> STEPTIM },
+		{ GL843_FMOVDEC, move.alen >> STEPTIM },
+
+		/* TODO: Set up proper vref values.
+
+		This is the win-driver set:
+
+		platen settings, 75 - 1200 dpi:
+		  75 dpi: VRHOME = 0, VRMOVE = 0, VRBACK = 7, VRSCAN = 0
+		 150 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
+		 300 dpi: VRHOME = 5, VRMOVE = 0, VRBACK = 7, VRSCAN = 5
+		 600 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
+		1200 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 4
+
+		film settings, 1200 - 9600 dpi:
+			  VRHOME = 1, VRMOVE = 0, VRBACK = 1, VRSCAN = 4
+		*/
+
+		{ GL843_VRSCAN, 4 },
+		{ GL843_VRBACK, 7 },
+		{ GL843_VRMOVE, 5 },
+		{ GL843_VRHOME, 5 },
+	};
+	CHK(write_regs(dev, motor, ARRAY_SIZE(motor)));
+
+	feedl = ss->start_y; /* Assume scanner head is at home */
+	feedl = feedl - (2*move.alen + scan.alen + scanfeed);
+	if (feedl > 0) {
+		/* Set up fast moving before scanning. */
+		set_reg(dev, GL843_FASTFED, 1);
+		set_reg(dev, GL843_SCANFED, scanfeed >> STEPTIM);
+		z2mod = (scan.t_max + scan.a[scan.alen - 1] * scanfeed) % lperiod;
+		DBG(DBG_info, "   fast move: accel=%d + feed=%d + decel=%d\n",
+			move.alen, feedl, move.alen);
+		DBG(DBG_info, "+ scan start: accel=%d + feed=%d = %d steps\n",
+			scan.alen, scanfeed,
+			move.alen + feedl + move.alen + scan.alen + scanfeed);
+	} else {
+		/* Don't use fast moving before scanning - not enough room. */
+		set_reg(dev, GL843_FASTFED, 0);
+		feedl = ss->start_y;
+		feedl -= scan.alen;
+		if (feedl < 1) {
+			DBG(DBG_warn, "Cannot start scan early enough.\n");
+			DBG(DBG_warn, "Skipping %d lines at the top.\n",
+				1 - feedl);
+			ss->height -= (1 - feedl);
+			if (ss->height < 1)
+				ss->height = 1;
+			feedl = 1;
+		}
+
+		DBG(DBG_info, "scan start: accel=%d + feed=%d = %d steps\n",
+			scan.alen, feedl, scan.alen + feedl);
+		z2mod = (scan.t_max + scan.a[scan.alen - 1] * feedl) % lperiod;
+	}
+
+	set_reg(dev, GL843_FEEDL, feedl);
+	set_reg(dev, GL843_LINCNT, ss->height);
+	set_reg(dev, GL843_Z2MOD, z2mod);
+
+	if (ss->backtrack > 0) {
+		ss->backtrack = ALIGN(ss->backtrack, 1 << STEPTIM);
+		z1mod = (scan.t_max + scan.a[scan.alen - 1] * ss->backtrack) % lperiod;
+		set_reg(dev, GL843_FWDSTEP, ss->backtrack >> STEPTIM);
+		set_reg(dev, GL843_BWDSTEP, ss->backtrack >> STEPTIM);
+		set_reg(dev, GL843_Z1MOD, z1mod);
+		set_reg(dev, GL843_ACDCDIS, 0);
+	} else {
+		set_reg(dev, GL843_ACDCDIS, 1); /* Disable backtracking. */
+	}
+
+	CHK(flush_regs(dev));
+
+	CHK(send_motor_accel(dev, 1, scan.a, 1020));
+	CHK(send_motor_accel(dev, 2, scan.a, 1020));
+	CHK(send_motor_accel(dev, 3, scan.a, 1020));
+	CHK(send_motor_accel(dev, 4, move.a, 1020));
+
+	return SANE_STATUS_GOOD;
+
+chk_failed:
+	return SANE_STATUS_IO_ERROR;
 }
 
 static int scan_img(struct gl843_device *dev,
@@ -668,22 +875,7 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 	CHK(calc_shading(dev, cal));
 	CHK(set_lamp(dev, lamp, lamp_to));
 	CHK(send_shading(dev, cal->sc, cal->sc_len, 0));
-
-	int dvdset = 1, shdarea = 1, aveenb = 1;
-
-	struct regset_ent postprocessing[] = {
-		/* 0x01 */
-		{ GL843_DVDSET, dvdset },
-		{ GL843_STAGGER, 0 },
-		{ GL843_COMPENB, 0 },
-		{ GL843_SHDAREA, shdarea },
-		/* 0x03 */
-		{ GL843_AVEENB, aveenb }, 	/* X scaling: 1=avg, 0=del */
-		/* 0x06 */
-		{ GL843_GAIN4, 0 },		/* 0/1: shading gain of 4/8. */
-	};
-	CHK(write_regs(dev, postprocessing, ARRAY_SIZE(postprocessing)));
-
+	CHK(select_shading(dev, SHADING_CORR_AREA));
 	CHK(move_carriage(dev, -cal_y_pos));
 	while (!read_reg(dev, GL843_HOMESNR))
 		usleep(10000);
