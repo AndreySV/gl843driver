@@ -39,6 +39,17 @@ struct calibration_info
 	uint16_t A;		/* Shading gain factor (0x2000 or 0x4000) */
 };
 
+struct unshifter
+{
+	int wr;		/* Write cursor */
+	int rd[3];	/* Read cursors */
+	int size;	/* Buffer capacity [number of pixels] */
+	size_t (*unshift)(uint8_t*, size_t, struct unshifter *);
+
+	uint8_t buf[0];
+};
+
+struct unshifter *create_unshifter(int s1, int s2, int s3, int depth);
 int do_warmup_scan(struct gl843_device *dev, float y_pos);
 int do_move_test(struct gl843_device *dev,
 	int distance, int start_speed, int end_speed, float exp, int vref);
