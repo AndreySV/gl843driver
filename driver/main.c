@@ -28,6 +28,7 @@
 #include "low.h"
 #include "cs4400f.h"
 #include "main.h"
+#include "scan.h"
 
 
 /* List of scanners recognized by the driver */
@@ -440,7 +441,9 @@ static CS4400F_Scanner *create_CS4400F()
 	opt->constraint_type = SANE_CONSTRAINT_RANGE;
 	opt->constraint.range = &s->gamma_range;
 
-	s->state = STATE_UNKNOWN;
+	s->need_warmup = SANE_TRUE;
+	s->need_shading = SANE_TRUE;
+	s->is_scanning = SANE_FALSE;
 
 	return s;
 
@@ -647,6 +650,7 @@ static SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scann
 	CHK(libusb_claim_interface(h, 0));
 	CHK_MEM(s = create_CS4400F());
 	CHK_MEM(s->hw = create_gl843dev(h));
+	CHK(do_base_configuration(s->hw));
 
 	*scanner = s;
 	return SANE_STATUS_GOOD;
@@ -702,8 +706,7 @@ void sane_close(SANE_Handle handle)
 {
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	if (s) {
-		dump_scan_settings(s);
-		// TODO: Reset scanner
+		write_reg(s->hw, GL843_SCANRESET, 1);
 		destroy_scanner(s);
 	}
 }
@@ -812,8 +815,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 		if (value == NULL)
 			return SANE_STATUS_INVAL;
 
-//		if (s->is_scanning)
-//				return SANE_STATUS_DEVICE_BUSY;
+		if (s->is_scanning)
+			return SANE_STATUS_DEVICE_BUSY;
 
 		if (!SANE_OPTION_IS_ACTIVE(opt->cap)
 				|| !SANE_OPTION_IS_SETTABLE(opt->cap))
@@ -831,6 +834,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			break;
 		case OPT_SOURCE:
 			i = find_constraint_string(value, s->source_names);
+			s->need_warmup |= (s->source != s->sources[i+1]);
+			s->need_shading |= s->need_warmup;
 			s->source = s->sources[i+1];
 			flags |= SANE_INFO_RELOAD_PARAMS;
 			break;
@@ -839,6 +844,7 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			flags |= SANE_INFO_RELOAD_PARAMS;
 			break;
 		case OPT_RESOLUTION:
+			s->need_shading |= (s->x_dpi != val->w);
 			s->x_dpi = val->w;
 			s->y_dpi = val->w;
 			flags |= SANE_INFO_RELOAD_PARAMS;
@@ -942,13 +948,29 @@ SANE_Status sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
 	return SANE_STATUS_GOOD;
 }
 
+static SANE_Bool params_ok(CS4400F_Scanner *s)
+{
+	int ret = SANE_TRUE;
+	ret = ret && (s->tl_x < s->br_x);
+	ret = ret && (s->tl_y < s->br_y);
+	ret = ret && (s->source == LAMP_PLATEN || s->source == LAMP_TA);
+
+	return ret;
+}
+
 SANE_Status sane_start(SANE_Handle handle)
 {
+	int ret;
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	SANE_Parameters p;
 	struct scan_setup ss = {};
 
 	sane_get_parameters(s, &p);
+
+	if (!params_ok(s)) {
+		DBG(DBG_error, "Invalid parameter values set. Won't start scan.\n");
+		return SANE_STATUS_INVAL;
+	}
 
 	ss.fmt = s->depth * (s->mode == SANE_FRAME_RGB ? 3 : 1);
 	/* TODO: replace gl843_pixformat in lower layers with
@@ -967,12 +989,12 @@ SANE_Status sane_start(SANE_Handle handle)
 	if (s->source == LAMP_PLATEN) {
 		ss.linesel = (ss.dpi < 1200) ? 0 : 1;
 		ss.tgtime = 0;
-		ss.lperiod = 11640;	/* line period = 2^tgtime * lperiod */
+		ss.lperiod = 11640;
 		ss.backtrack = (ss.dpi < 1200) ? 200 : 100;
 	} else if (s->source == LAMP_TA) {
 		ss.linesel = 0;
 		ss.tgtime = 1;
-		ss.lperiod = 44400;
+		ss.lperiod = 44400;	/* line period = 2^tgtime * lperiod */
 		ss.backtrack = (ss.dpi > 1200) ? 50 : 100;
 	} else {
 		DBG(DBG_error, "Invalid source, enum = %d\n", s->source);
@@ -983,9 +1005,30 @@ SANE_Status sane_start(SANE_Handle handle)
 	ss.expg = 40000;
 	ss.expb = 40000;
 
+	/* TODO: Gamma correction */
+	/* TODO: Warmup */
+	/* TODO: Shading correction setup */
+
+	CHK(reset_and_move_home(s->hw));
+
+	CHK(setup_motor(s->hw, &ss));
+	CHK(setup_ccd_and_afe(s->hw,
+		ss.fmt,
+		ss.start_x,
+		ss.width,
+		ss.dpi,
+		ss.afe_dpi,
+		ss.linesel,
+		ss.tgtime, ss.lperiod,
+		ss.expr, ss.expg, ss.expb));
+
+	CHK(select_shading(s->hw, SHADING_CORR_OFF));
+
 	dump_scan_settings(s);
 
-	return SANE_STATUS_UNSUPPORTED;
+	return SANE_STATUS_GOOD;
+chk_failed:
+	return SANE_STATUS_IO_ERROR;
 }
 
 SANE_Status sane_read(SANE_Handle handle,
@@ -999,7 +1042,11 @@ SANE_Status sane_read(SANE_Handle handle,
 
 void sane_cancel(SANE_Handle handle)
 {
-//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	int ret;
+	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	CHK(reset_and_move_home(s->hw));
+chk_failed:
+	return;
 }
 
 SANE_Status sane_set_io_mode(SANE_Handle handle, SANE_Bool non_blocking)

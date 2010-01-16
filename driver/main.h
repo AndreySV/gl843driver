@@ -17,19 +17,6 @@
 
 /* Type declarations for main.c */
 
-enum scanner_state
-{
-	STATE_UNAVAILABLE = 0,	/* Not connected or powered down */
-	STATE_UNKNOWN,		/* Connected but in an unknown state */
-	STATE_CONFIGURED,	/* Connected and configured */
-	STATE_WARMING_UP_LAMP,	/* Waiting for lamp to warm up */
-	STATE_CALIBRATING,	/* Performing calibration scans */
-	STATE_READY,		/* At home, configured, calibrated, waiting */
-	STATE_MOVING_OUT,	/* Moving to scan start */
-	STATE_SCANNING,
-	STATE_MOVING_HOME,	/* Going home */
-};
-
 enum Scanner_Option
 {
 	OPT_NUM_OPTS = 0,
@@ -90,8 +77,11 @@ typedef struct
 
 typedef struct
 {
-	enum scanner_state state;
 	struct gl843_device *hw;
+
+	SANE_Bool need_warmup;
+	SANE_Bool need_shading;
+	SANE_Bool is_scanning;
 
 	SANE_Option_Descriptor opt[OPT_NUM_OPTIONS];
 

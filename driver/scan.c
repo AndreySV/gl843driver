@@ -402,8 +402,7 @@ MULSTOP:  STOPTIM multiplier.
 /* Create and send motor acceleration profiles to the scanner.
  * Note: It is assumed that the head is in the home position.
  */
-int setup_scanning_motor_profile(struct gl843_device *dev,
-				 struct scan_setup *ss)
+int setup_motor(struct gl843_device *dev, struct scan_setup *ss)
 {
 	int ret;
 
@@ -423,6 +422,9 @@ int setup_scanning_motor_profile(struct gl843_device *dev,
 		{ GL843_MULSTOP, 0 },
 		{ GL843_DECSEL, 1 },
 		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
+		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
+		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
+		{ GL843_MTRREV, 0 }, /* 0 = forward motion */
 		/* Scanning (table 1, 2 and 3) */
 		{ GL843_STOPTIM, 31 },
 		{ GL843_STEPSEL, ss->steptype },
@@ -1092,6 +1094,36 @@ int do_move_test(struct gl843_device *dev,
 
 	set_reg(dev, GL843_SCANRESET, 0);
 	flush_regs(dev);
+chk_failed:
+	return ret;
+}
+
+int reset_scanner(struct gl843_device *dev)
+{
+	return write_reg(dev, GL843_SCANRESET, 1);
+}
+
+int reset_and_move_home(struct gl843_device *dev)
+{
+	int ret;
+	CHK(write_reg(dev, GL843_SCANRESET, 1));
+	while(!read_reg(dev, GL843_HOMESNR))
+		usleep(10000);
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+int start_scan(struct gl843_device *dev)
+{
+	int ret;
+
+	set_reg(dev, GL843_MTRPWR, 1);
+	set_reg(dev, GL843_SCAN, 1);
+	CHK(flush_regs(dev));
+	CHK(write_reg(dev, GL843_MOVE, 16));
+
+	ret = 0;
 chk_failed:
 	return ret;
 }
