@@ -462,22 +462,22 @@ static void dump_scan_settings(CS4400F_Scanner *s)
 	j = find_constraint_value(s->source, s->sources) - 1;
 	sane_get_parameters(s, &p);
 
-	DBG(DBG_trace, "Current scanning settings\n");
-	DBG(DBG_trace, "-------------------------\n");
-	DBG(DBG_trace, "       mode: %s\n", s->mode_names[i]);
-	DBG(DBG_trace, "     source: %s\n", s->source_names[j]);
-	DBG(DBG_trace, "      depth: %d [bits]\n", s->depth);
-	DBG(DBG_trace, " resolution: %d [dpi]\n", s->x_dpi);
-	DBG(DBG_trace, "        top: %.1f [mm]\n", SANE_UNFIX(s->tl_y));
-	DBG(DBG_trace, "       left: %.1f [mm]\n", SANE_UNFIX(s->tl_x));
-	DBG(DBG_trace, "     bottom: %.1f [mm]\n", SANE_UNFIX(s->br_y));
-	DBG(DBG_trace, "      right: %.1f [mm]\n", SANE_UNFIX(s->br_x));
-	DBG(DBG_trace, "gamma corr.: %s\n", s->use_gamma ? "yes" : "no");
-	DBG(DBG_trace, "-------------------------\n");
-	DBG(DBG_trace, "pixels/line: %d\n", p.pixels_per_line);
-	DBG(DBG_trace, " bytes/line: %d\n", p.bytes_per_line);
-	DBG(DBG_trace, "      lines: %d\n", p.lines);
-	DBG(DBG_trace, "-------------------------\n");
+	DBG(DBG_info, "Current scanning settings\n");
+	DBG(DBG_info, "-------------------------\n");
+	DBG(DBG_info, "       mode: %s\n", s->mode_names[i]);
+	DBG(DBG_info, "     source: %s\n", s->source_names[j]);
+	DBG(DBG_info, "      depth: %d [bits]\n", s->depth);
+	DBG(DBG_info, " resolution: %d [dpi]\n", s->x_dpi);
+	DBG(DBG_info, "        top: %.1f [mm]\n", SANE_UNFIX(s->tl_y));
+	DBG(DBG_info, "       left: %.1f [mm]\n", SANE_UNFIX(s->tl_x));
+	DBG(DBG_info, "     bottom: %.1f [mm]\n", SANE_UNFIX(s->br_y));
+	DBG(DBG_info, "      right: %.1f [mm]\n", SANE_UNFIX(s->br_x));
+	DBG(DBG_info, "gamma corr.: %s\n", s->use_gamma ? "yes" : "no");
+	DBG(DBG_info, "-------------------------\n");
+	DBG(DBG_info, "pixels/line: %d\n", p.pixels_per_line);
+	DBG(DBG_info, " bytes/line: %d\n", p.bytes_per_line);
+	DBG(DBG_info, "      lines: %d\n", p.lines);
+	DBG(DBG_info, "-------------------------\n");
 }
 
 static void free_sane_usb_dev(SANE_USB_Device *s)
@@ -600,7 +600,7 @@ SANE_Status sane_get_devices(const SANE_Device ***device_list,
 
 		/* Enumerate found scanner */
 
-		DBG(DBG_trace, "found USB device 0x%04x:0x%04x\n",
+		DBG(DBG_info, "found USB device 0x%04x:0x%04x\n",
 			dd.idVendor, dd.idProduct);
 
 		CHK_MEM(tmp = realloc(g_scanners, (n+2)*sizeof(*tmp)));
@@ -650,7 +650,7 @@ static SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scann
 	CHK(libusb_claim_interface(h, 0));
 	CHK_MEM(s = create_CS4400F());
 	CHK_MEM(s->hw = create_gl843dev(h));
-	CHK(do_base_configuration(s->hw));
+	CHK(setup_base(s->hw));
 
 	*scanner = s;
 	return SANE_STATUS_GOOD;
@@ -671,7 +671,7 @@ SANE_Status sane_open(SANE_String_Const devicename,
 	SANE_USB_Device *dev = NULL;
 	CS4400F_Scanner *s;
 
-	DBG(DBG_trace, "opening %s.\n", devicename);
+	DBG(DBG_msg, "opening %s.\n", devicename);
 
 	if (g_scanners == NULL)
 		CHK_SANE(sane_get_devices(NULL, SANE_TRUE));
@@ -690,7 +690,7 @@ SANE_Status sane_open(SANE_String_Const devicename,
 	}
 
 	if (dev == NULL) {
-		DBG(DBG_trace, "device not found\n");
+		DBG(DBG_warn, "device not found\n");
 		return SANE_STATUS_INVAL; /* No device found */
 	}
 
@@ -745,6 +745,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 		return SANE_STATUS_INVAL;
 
 	opt = &(s->opt[option]);
+
+	/* Getters */
 
 	switch (action) {
 	case SANE_ACTION_GET_VALUE:
@@ -807,6 +809,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 
 		return SANE_STATUS_GOOD;
 	}
+
+	/* Setters */
 
 	case SANE_ACTION_SET_VALUE:
 	{
@@ -964,6 +968,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	SANE_Parameters p;
 	struct scan_setup ss = {};
+	float bwthr, bwhys;
 
 	sane_get_parameters(s, &p);
 
@@ -978,6 +983,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	ss.dpi = s->x_dpi;	/* y_dpi = x_dpi for now. */
 	ss.afe_dpi = 1200; /* TODO: Set up properly */
 	ss.steptype = (ss.dpi <= 1200) ? HALF_STEP : QUARTER_STEP;
+
 	ss.start_x = mm_to_px(SANE_FIX(0.0), s->x_start + s->tl_x, s->x_dpi, NULL);
 	ss.width = p.pixels_per_line;
 	ss.start_y = mm_to_px(SANE_FIX(0.0), s->y_start + s->tl_y, s->x_dpi, NULL);
@@ -986,24 +992,26 @@ SANE_Status sane_start(SANE_Handle handle)
 	ss.c_move = (ss.steptype == HALF_STEP) ? 180 : 90;
 	ss.c_scan = 5000; /* TODO */
 
+	ss.expr = 40000;
+	ss.expg = 40000;
+	ss.expb = 40000;
+
+	bwthr = SANE_UNFIX(s->bw_threshold) * 255 / 100;
+	bwhys = SANE_UNFIX(s->bw_hysteresis) * 255 / 100;
+	ss.bwhi = (int) satf(bwthr + (bwhys / 2) + 0.5, 0, 255);
+	ss.bwlo = (int) satf(bwthr - (bwhys / 2) + 0.5, 0, 255);
+
 	if (s->source == LAMP_PLATEN) {
 		ss.linesel = (ss.dpi < 1200) ? 0 : 1;
 		ss.tgtime = 0;
 		ss.lperiod = 11640;
 		ss.backtrack = (ss.dpi < 1200) ? 200 : 100;
-	} else if (s->source == LAMP_TA) {
+	} else { /* if (s->source == LAMP_TA) { */
 		ss.linesel = 0;
 		ss.tgtime = 1;
 		ss.lperiod = 44400;	/* line period = 2^tgtime * lperiod */
 		ss.backtrack = (ss.dpi > 1200) ? 50 : 100;
-	} else {
-		DBG(DBG_error, "Invalid source, enum = %d\n", s->source);
-		return SANE_STATUS_INVAL;
 	}
-
-	ss.expr = 40000;
-	ss.expg = 40000;
-	ss.expb = 40000;
 
 	/* TODO: Gamma correction */
 	/* TODO: Warmup */
@@ -1012,15 +1020,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	CHK(reset_and_move_home(s->hw));
 
 	CHK(setup_motor(s->hw, &ss));
-	CHK(setup_ccd_and_afe(s->hw,
-		ss.fmt,
-		ss.start_x,
-		ss.width,
-		ss.dpi,
-		ss.afe_dpi,
-		ss.linesel,
-		ss.tgtime, ss.lperiod,
-		ss.expr, ss.expg, ss.expb));
+	CHK(setup_frontend(s->hw, &ss));
 
 	CHK(select_shading(s->hw, SHADING_CORR_OFF));
 
@@ -1071,39 +1071,25 @@ SANE_Status sane_get_select_fd(SANE_Handle handle, SANE_Int *fd)
 DLL_EXPORT SANE_Status
 ENTRY(init)(SANE_Int* version_code, SANE_Auth_Callback authorize)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_init(version_code, authorize);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_init(version_code, authorize);
 }
 
 DLL_EXPORT void
 ENTRY(exit)()
 {
-	DBG(DBG_api, "enter\n");
 	sane_exit();
-	DBG(DBG_api, "leave\n");
 }
 
 DLL_EXPORT SANE_Status
 ENTRY(get_devices)(const SANE_Device ***device_list, SANE_Bool local_only)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_get_devices(device_list, local_only);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_get_devices(device_list, local_only);
 }
 
 DLL_EXPORT SANE_Status
 ENTRY(open)(SANE_String_Const devicename, SANE_Handle *handle)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_open(devicename, handle);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_open(devicename, handle);
 }
 
 DLL_EXPORT
@@ -1115,11 +1101,7 @@ void ENTRY(close)(SANE_Handle handle)
 DLL_EXPORT const SANE_Option_Descriptor *
 ENTRY(get_option_descriptor)(SANE_Handle handle, SANE_Int option)
 {
-	const SANE_Option_Descriptor *ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_get_option_descriptor(handle, option);
-	DBG(DBG_api, "leave\n");
-	return ret;
+	return sane_get_option_descriptor(handle, option);
 }
 
 DLL_EXPORT SANE_Status
@@ -1129,31 +1111,19 @@ ENTRY(control_option)(SANE_Handle handle,
 		      void *value,
 		      SANE_Int *info)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_control_option(handle, option, action, value, info);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_control_option(handle, option, action, value, info);
 }
 
 DLL_EXPORT SANE_Status
 ENTRY(get_parameters)(SANE_Handle handle, SANE_Parameters *params)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_get_parameters(handle, params);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_get_parameters(handle, params);
 }
 
 DLL_EXPORT SANE_Status
 ENTRY(start)(SANE_Handle handle)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_start(handle);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_start(handle);
 }
 
 DLL_EXPORT SANE_Status
@@ -1162,38 +1132,24 @@ ENTRY(read)(SANE_Handle handle,
 	    SANE_Int max_length,
 	    SANE_Int *length)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_read(handle, data, max_length, length);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_read(handle, data, max_length, length);
 }
 
 DLL_EXPORT void
 ENTRY(cancel)(SANE_Handle handle)
 {
-	DBG(DBG_api, "enter\n");
 	sane_cancel(handle);
-	DBG(DBG_api, "leave\n");
 }
 
 DLL_EXPORT SANE_Status
 ENTRY(set_io_mode)(SANE_Handle handle, SANE_Bool non_blocking)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_set_io_mode(handle, non_blocking);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_set_io_mode(handle, non_blocking);
 }
 
 DLL_EXPORT SANE_Status
 ENTRY(get_select_fd)(SANE_Handle handle, SANE_Int *fd)
 {
-	SANE_Status ret;
-	DBG(DBG_api, "enter\n");
-	ret = sane_get_select_fd(handle, fd);
-	DBG(DBG_api, "leave, status: %s\n", sanei_strerror(ret));
-	return ret;
+	return sane_get_select_fd(handle, fd);
 }
 

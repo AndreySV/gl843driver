@@ -76,6 +76,7 @@ struct scan_setup {
 	int c_move;
 	int c_scan;
 	int backtrack;		/* Backtracking steps */
+	int bwhi, bwlo;		/* Black/white high and low thresholds */
 };
 
 extern int usleep();

@@ -105,7 +105,6 @@ double get_timer(struct dbg_timer *timer)
 	return diff;
 }
 
-
 /*
 * Get CPU endianness. 0 = unknown, 1 = little, 2 = big
 */
@@ -136,7 +135,8 @@ void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len)
 }
 
 /* Convert millimeters to pixels. */
-int mm_to_px(SANE_Fixed start, SANE_Fixed end, int dpi, int *offset)
+int __attribute__ ((pure))
+mm_to_px(SANE_Fixed start, SANE_Fixed end, int dpi, int *offset)
 {
 	int size;
 
@@ -155,75 +155,17 @@ float __attribute__ ((pure)) satf(float v, float min, float max)
 		v = max;
 	return v;
 }
-#if 0
-const char *sanei_libusb_strerror(int errcode)
+
+int __attribute__ ((pure)) min(int a, int b)
 {
-	switch (errcode) {
-	case LIBUSB_SUCCESS:
-		return "Success (no error)";
-	case LIBUSB_ERROR_IO:
-		return "Input/output error";
-	case LIBUSB_ERROR_INVALID_PARAM:
-		return "Invalid parameter";
-	case LIBUSB_ERROR_ACCESS:
-		return "Access denied (insufficient permissions)";
-	case LIBUSB_ERROR_NO_DEVICE:
-		return "No such device (it may have been disconnected)";
-	case LIBUSB_ERROR_NOT_FOUND:
-		return "Entity not found";
-	case LIBUSB_ERROR_BUSY:
-		return "Resource busy";
-	case LIBUSB_ERROR_TIMEOUT:
-		return "Operation timed out";
-	case LIBUSB_ERROR_OVERFLOW:
-		return "Overflow";
-	case LIBUSB_ERROR_PIPE:
-		return "Pipe error";
-	case LIBUSB_ERROR_INTERRUPTED:
-		return "System call interrupted (perhaps due to signal)";
-	case LIBUSB_ERROR_NO_MEM:
-		return "Insufficient memory";
-	case LIBUSB_ERROR_NOT_SUPPORTED:
-		return "Operation not supported or unimplemented on this platform";
-	case LIBUSB_ERROR_OTHER:
-		return "Other error";
-	default:
-		return "Unknown libusb-1.0 error code";
-	}
+	return (a < b) ? a : b;
 }
 
-const char *sanei_strerror(int errcode)
+int __attribute__ ((pure)) max(int a, int b)
 {
-	switch (errcode) {
-	case SANE_STATUS_GOOD:
-		return "everything A-OK";
-	case SANE_STATUS_UNSUPPORTED:
-		return "operation is not supported";
-	case SANE_STATUS_CANCELLED:
-		return "operation was cancelled";
-	case SANE_STATUS_DEVICE_BUSY:
-		return "device is busy; try again later";
-	case SANE_STATUS_INVAL:
-		return "data is invalid (includes no dev at open)";
-	case SANE_STATUS_EOF:
-		return "no more data available (end-of-file)";
-	case SANE_STATUS_JAMMED:
-		return "document feeder jammed";
-	case SANE_STATUS_NO_DOCS:
-		return "document feeder out of documents";
-	case SANE_STATUS_COVER_OPEN:
-		return "scanner cover is open";
-	case SANE_STATUS_IO_ERROR:
-		return "error during device I/O";
-	case SANE_STATUS_NO_MEM:
-		return "out of memory";
-	case SANE_STATUS_ACCESS_DENIED:
-		return "access to resource has been denied";
-	default:
-		return "undefined SANE error";
-	}
+	return (a > b) ? a : b;
 }
-#endif
+
 pid_t sanei_thread_begin(int (*func) (void *args), void *args)
 {
 	pid_t pid;

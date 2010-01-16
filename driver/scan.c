@@ -24,8 +24,8 @@
 #include "util.h"
 #include "scan.h"
 
-struct gl843_image *create_image(int width, int height,
-				 enum gl843_pixformat fmt)
+static struct gl843_image *create_image(int width, int height,
+					enum gl843_pixformat fmt)
 {
 	int bpp = fmt; /* fmt is enumerated as bits per pixel */
 	int stride = ALIGN(bpp * width, 8) / 8;
@@ -93,428 +93,6 @@ void write_pnm_image(const char *filename, struct gl843_image *img)
 		swap_buffer_endianness((uint16_t *)img->data,
 			(uint16_t *)img->data, img->len / 2);
 	}
-}
-
-static size_t unshift16(uint8_t* pixels, size_t count, struct unshifter *us)
-{
-	int i, j, size;
-	size_t N;
-	int rd[3], wr;
-	uint16_t *buf, *px;
-
-	px = (uint16_t *) pixels;
-	buf = (uint16_t *) us->buf;
-	size = us->size;
-	wr = us->wr;
-	for (j = 0; j < 3; j++) {
-		rd[j] = us->rd[j];
-	}
-
-	N = 0;
-	for (i = 0; i < count; i++) {
-		/* Write into circular buffer */
-		for (j = 0; j < 3; j++) {
-			buf[wr++] = *px++;
-		}
-		wr %= size;
-
-		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
-			/* Read from circular buffer if there is enough data. */
-			for (j = 0; j < 3; j++) {
-				px[-3 + j] = buf[rd[j]];
-			}
-			N++;
-		}
-
-		for (j = 0; j < 3; j++) {
-			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
-		}
-	}
-
-	us->wr = wr;
-	for (j = 0; j < 3; j++) {
-		us->rd[j] = rd[j];
-	}
-	return N;
-}
-
-static size_t unshift8(uint8_t* pixels, size_t count, struct unshifter *us)
-{
-	int i, j, size;
-	size_t N;
-	int rd[3], wr;
-	uint8_t *buf, *px;
-
-	px = pixels;
-	buf = us->buf;
-	size = us->size;
-	wr = us->wr;
-	for (j = 0; j < 3; j++) {
-		rd[j] = us->rd[j];
-	}
-
-	N = 0;
-	for (i = 0; i < count; i++) {
-		/* Write into circular buffer */
-		for (j = 0; j < 3; j++) {
-			buf[wr++] = *px++;
-		}
-		wr %= size;
-
-		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
-			/* Read from circular buffer if there is enough data. */
-			for (j = 0; j < 3; j++) {
-				px[-3 + j] = buf[rd[j]];
-			}
-			N++;
-		}
-
-		for (j = 0; j < 3; j++) {
-			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
-		}
-	}
-
-	us->wr = wr;
-	for (j = 0; j < 3; j++) {
-		us->rd[j] = rd[j];
-	}
-	return N;
-}
-
-static int __attribute__ ((pure)) min(int a, int b)
-{
-	return (a < b) ? a : b;
-}
-
-static int __attribute__ ((pure)) max(int a, int b)
-{
-	return (a > b) ? a : b;
-}
-
-/* RGB pixel-shift corrector 
- * s1: Pixel shift [pixels] to correct for first (eg red) component.
- * s2: Pixel shift [pixels] to correct for first (eg green) component.
- * s3: Pixel shift [pixels] to correct for first (eg blue) component.
- * depth: Number of bits per channel, 8 or 16.
- */
-struct unshifter *create_unshifter(int s1, int s2, int s3, int depth)
-{
-	struct unshifter *us;
-	int s_min, size;
-
-	/* Ensure at least one shift value is zero. */
-	s_min = min(min(s1, s2), s3);
-	s1 = s1 - s_min;
-	s2 = s2 - s_min;
-	s3 = s3 - s_min;
-
-	/* Create object */
-	size = max(max(s1, s2), s3);
-	us = malloc(sizeof(*us) + size * 3 * (depth / 8));
-	if (!us)
-		return NULL;
-	us->size = size;
-	us->rd[0] = -s1;
-	us->rd[1] = -s2;
-	us->rd[2] = -s3;
-	us->wr = 0;
-
-	us->unshift = (depth == 16) ? unshift16 : unshift8;
-
-	return us;
-}
-
-/* Move the scanner carriage without scanning.
- *
- * This function moves the scanner head to a calibration or
- * lamp warmup position, or back home once completed.
- *
- * d: moving distance in inches. > 0: forward, < 0: back
- *    WARNING: A bad value for d can crash the carriage into the wall.
- */
-static int move_carriage(struct gl843_device *dev, float d)
-{
-	int ret;
-	int feedl;
-	struct motor_accel move;
-
-	feedl = (int)(4800 * d + 0.5);
-	if (feedl >= 0) {
-		set_reg(dev, GL843_MTRREV, 0);
-	} else {
-		set_reg(dev, GL843_MTRREV, 1);
-		feedl = -feedl;
-	}
-
-	build_accel_profile(&move, 24576, 240, 1.5);
-
-	/* Subtract acceleration and deceleration distances */
-	feedl = feedl - 2 * move.alen;
-	if (feedl < 0) {
-		/* The acceleration/deceleration curves are longer than
-		 * the distance we wish to move. Set feedl = 0 and trim
-		 * the curves to desired lengths. */
-		move.alen = (feedl + 2 * move.alen) / 2;
-		feedl = 0;
-	}
-
-	struct regset_ent motor1[] = {
-		/* Misc */
-		{ GL843_STEPTIM, STEPTIM },
-		{ GL843_MULSTOP, 0 },
-		{ GL843_STOPTIM, 0 },
-		/* Scanning (table 1 and 3)*/
-		{ GL843_STEPSEL, HALF_STEP },
-		{ GL843_STEPNO, 1 },
-		{ GL843_FSHDEC, 1 },
-		{ GL843_VRSCAN, 3 },	// FIXME: Not hard coded ...
-		/* Backtracking (table 2) */
-		{ GL843_FASTNO, 1 },
-		{ GL843_VRBACK, 3 },	// FIXME: Not hard coded ...
-		/* Fast feeding (table 4) and go-home (table 5) */
-		{ GL843_FSTPSEL, HALF_STEP },
-		{ GL843_FMOVNO, move.alen >> STEPTIM },
-		{ GL843_FMOVDEC, move.alen >> STEPTIM },
-		{ GL843_DECSEL, 1 }, /* Windows driver: 0 or 1 */
-		{ GL843_VRMOVE, 5 },	//move.vref FIXME: Not hard coded...
-		{ GL843_VRHOME, 5 },	//move.vref FIXME: Not hard coded...
-
-		{ GL843_FASTFED, 1 },
-		{ GL843_SCANFED, 0 },
-		{ GL843_FEEDL, feedl },
-		{ GL843_LINCNT, 0 },
-		{ GL843_ACDCDIS, 1 }, /* Disable backtracking. */
-
-		{ GL843_Z1MOD, 0 },
-		{ GL843_Z2MOD, 0 },
-	};
-	CHK(write_regs(dev, motor1, ARRAY_SIZE(motor1)));
-
-	send_motor_accel(dev, 1, move.a, 1020);
-	send_motor_accel(dev, 2, move.a, 1020);
-	send_motor_accel(dev, 3, move.a, 1020);
-	send_motor_accel(dev, 4, move.a, 1020);
-	send_motor_accel(dev, 5, move.a, 1020);
-
-	set_reg(dev, GL843_NOTHOME, 0);
-	set_reg(dev, GL843_AGOHOME, 1);
-	set_reg(dev, GL843_MTRPWR, 1);
-	CHK(flush_regs(dev));
-
-	write_reg(dev, GL843_SCAN, 0);
-	write_reg(dev, GL843_MOVE, 16);
-
-	ret = 0;
-chk_failed:
-	return ret;
-}
-
-/* Ref: gl843 datasheet, FMOVNO register
-
-Scanning with fast feed (FASTFED = 1)   Direction: ----->
-
-     moving to scan start                         scanning
-
-          FEEDL                       scan start            scan stop
-speed       |                              .                     .
-  |     ____v_____                 SCANFED .       LINCNT        .
-  |    /          \    STOPTIM        |    .          |          .
-  |   /            \   (time,     ____v____.__________v__________.
-  |  / <- FMOVNO -> \   !steps)  /         .                      \
-  | /                \    |     /<- STEPNO .             FSHDEC -> \
-  |/__________________\___v____/___________.________________________\__ distance
-
-
-Scanning without fast feed (FASTFED = 0)   Direction : ----->
-
-                                      scan start            scan stop
-speed                                      .                     .
-  |                FEEDL                   .       LINCNT        .
-  |                  |                     .          |          .
-  |   _______________v_____________________.__________v__________.
-  |  /                                     .                      \
-  | / <- STEPNO                            .             FSHDEC -> \
-  |/_______________________________________.________________________\__ distance
-
-
-
-Moving home after scanning    Direction: <-----
-
-speed
-  |____________________________________________________________________ distance
-  |\                                                                /
-  | \                                                              /
-  |  \ <- DECSEL,                                       FMOVNO -> /
-  |   \   FMOVDEC or FMOVNO (see LONGCURV)                       /
-  |    \________________________________________________________/
-
-
-
-Scanner backtracking when the buffer is full
-
-  |     scan start        buffer full
-  |            .  FWDSTEP   .
-  |            .      |     .
-  |            .______v_____.       direction: ------>
-  |           /              \
-  |          / <-- STEPNO --> \
-  |_________/__________________\______
-  |         \                  /
-  |          \  <- FASTNO ->  /
-  |           \              /
-  |            \  BWDSTEP   /       direction: <-----
-  |             \    |     /
-  |              \___v____/
-
-STEPNO:  Number of acceleration steps before scanning,  in motor table 1.
-FASTNO:  Number of acceleration steps in backtracking,  in motor table 2.
-FSHDEC:  Number of deceleration steps after scanning,   in motor table 3.
-FMOVNO:  Number of acceleration steps for fast feeding, in motor table 4.
-FMOVDEC: Number of deceleration steps for auto-go-home, in motor table 5.
-LONGCURV: If 0, FMOVNO and table 4 control deceleration for auto-go-home.
-          If 1, FMOVDEC, and table 5 control deceleration for auto-go-home.
-          See "Wall-hitting protection" in GL843 datasheet.
-FEEDL:   Number of feeding steps.
-SCANFED: Number of feeding steps before scanning.
-LINCNT:  Number of lines (steps) to scan.
-FWDSTEP:
-BWDSTEP:
-STEPTIM: Multiplier for STEPNO, FASTNO, FSHDEC, FMOVNO, FMOVDEC,
-         SCANFED, FWDSTEP, and BWDSTEP
-         The actual number of steps in each table or register is
-         <step_count> * 2^STEPTIM.
-DECSEL:  Number of deceleration steps after touching home sensor.
-         (Actual number of steps is 2^DECSEL.)
-STEPSEL: Motor step type for tables 1, 2 and 3
-FSTPSEL: Motor step type for tables 4 and 5
-
-TODO: When are DECSEL and FMOVEDEC used?
- It seems unlikely that both are used at the same time as they define
- the same thing. Right?
-
-Other bits:
-TB3TB1:   When set, table 1 replaces table 3
-TB5TB1:   When set, table 2 replaces table 5
-MULSTOP:  STOPTIM multiplier.
-*/
-
-
-/* Create and send motor acceleration profiles to the scanner.
- * Note: It is assumed that the head is in the home position.
- */
-int setup_motor(struct gl843_device *dev, struct scan_setup *ss)
-{
-	int ret;
-
-	struct motor_accel move; /* for moving out and home */
-	struct motor_accel scan; /* for scanning and backtracking */
-
-	const int scanfeed = 1020;
-	int feedl, z1mod, z2mod, lperiod;
-
-	lperiod = ss->lperiod << ss->tgtime;
-
-	build_accel_profile(&move, 28597, ss->c_move, 1.5);
-	build_accel_profile(&scan, 24576, ss->c_scan, 1.5);
-
-	struct regset_ent motor[] = {
-		{ GL843_STEPTIM, STEPTIM },
-		{ GL843_MULSTOP, 0 },
-		{ GL843_DECSEL, 1 },
-		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
-		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
-		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
-		{ GL843_MTRREV, 0 }, /* 0 = forward motion */
-		/* Scanning (table 1, 2 and 3) */
-		{ GL843_STOPTIM, 31 },
-		{ GL843_STEPSEL, ss->steptype },
-		{ GL843_STEPNO, scan.alen >> STEPTIM },
-		{ GL843_FSHDEC, scan.alen >> STEPTIM },
-		{ GL843_FASTNO, scan.alen >> STEPTIM },
-		/* Fast moving (table 4) */
-		{ GL843_FSTPSEL, ss->steptype },
-		{ GL843_FMOVNO, move.alen >> STEPTIM },
-		{ GL843_FMOVDEC, move.alen >> STEPTIM },
-
-		/* TODO: Set up proper vref values.
-
-		This is the win-driver set:
-
-		platen settings, 75 - 1200 dpi:
-		  75 dpi: VRHOME = 0, VRMOVE = 0, VRBACK = 7, VRSCAN = 0
-		 150 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
-		 300 dpi: VRHOME = 5, VRMOVE = 0, VRBACK = 7, VRSCAN = 5
-		 600 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
-		1200 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 4
-
-		film settings, 1200 - 9600 dpi:
-			  VRHOME = 1, VRMOVE = 0, VRBACK = 1, VRSCAN = 4
-		*/
-
-		{ GL843_VRSCAN, 4 },
-		{ GL843_VRBACK, 7 },
-		{ GL843_VRMOVE, 5 },
-		{ GL843_VRHOME, 5 },
-	};
-	CHK(write_regs(dev, motor, ARRAY_SIZE(motor)));
-
-	feedl = ss->start_y; /* Assume scanner head is at home */
-	feedl = feedl - (2*move.alen + scan.alen + scanfeed);
-	if (feedl > 0) {
-		/* Set up fast moving before scanning. */
-		set_reg(dev, GL843_FASTFED, 1);
-		set_reg(dev, GL843_SCANFED, scanfeed >> STEPTIM);
-		z2mod = (scan.t_max + scan.a[scan.alen - 1] * scanfeed) % lperiod;
-		DBG(DBG_info, "   fast move: accel=%d + feed=%d + decel=%d\n",
-			move.alen, feedl, move.alen);
-		DBG(DBG_info, "+ scan start: accel=%d + feed=%d = %d steps\n",
-			scan.alen, scanfeed,
-			move.alen + feedl + move.alen + scan.alen + scanfeed);
-	} else {
-		/* Don't use fast moving before scanning - not enough room. */
-		set_reg(dev, GL843_FASTFED, 0);
-		feedl = ss->start_y;
-		feedl -= scan.alen;
-		if (feedl < 1) {
-			DBG(DBG_warn, "Cannot start scan early enough.\n");
-			DBG(DBG_warn, "Skipping %d lines at the top.\n",
-				1 - feedl);
-			ss->height -= (1 - feedl);
-			if (ss->height < 1)
-				ss->height = 1;
-			feedl = 1;
-		}
-
-		DBG(DBG_info, "scan start: accel=%d + feed=%d = %d steps\n",
-			scan.alen, feedl, scan.alen + feedl);
-		z2mod = (scan.t_max + scan.a[scan.alen - 1] * feedl) % lperiod;
-	}
-
-	set_reg(dev, GL843_FEEDL, feedl);
-	set_reg(dev, GL843_LINCNT, ss->height);
-	set_reg(dev, GL843_Z2MOD, z2mod);
-
-	if (ss->backtrack > 0) {
-		ss->backtrack = ALIGN(ss->backtrack, 1 << STEPTIM);
-		z1mod = (scan.t_max + scan.a[scan.alen - 1] * ss->backtrack) % lperiod;
-		set_reg(dev, GL843_FWDSTEP, ss->backtrack >> STEPTIM);
-		set_reg(dev, GL843_BWDSTEP, ss->backtrack >> STEPTIM);
-		set_reg(dev, GL843_Z1MOD, z1mod);
-		set_reg(dev, GL843_ACDCDIS, 0);
-	} else {
-		set_reg(dev, GL843_ACDCDIS, 1); /* Disable backtracking. */
-	}
-
-	CHK(flush_regs(dev));
-
-	CHK(send_motor_accel(dev, 1, scan.a, 1020));
-	CHK(send_motor_accel(dev, 2, scan.a, 1020));
-	CHK(send_motor_accel(dev, 3, scan.a, 1020));
-	CHK(send_motor_accel(dev, 4, move.a, 1020));
-
-	ret = 0;
-chk_failed:
-	return ret;
 }
 
 static int scan_img(struct gl843_device *dev,
@@ -732,8 +310,8 @@ static float get_progress(float dL_start, float dL_end, float dL_prev, float dL)
 /* Wait until the lamp has warmed up.
  * Note: Don't forget to turn it on first.
  */
-int warm_up_lamp(struct gl843_device *dev,
-		 struct calibration_info *cal)
+static int warm_up_lamp(struct gl843_device *dev,
+			struct calibration_info *cal)
 {
 	int ret, i;
 	int n;			/* Number of scans */
@@ -924,12 +502,13 @@ chk_mem_failed:
 	goto chk_failed;
 }
 
-struct calibration_info *create_calinfo(enum gl843_lamp source,
-					float cal_y_pos,
-					int start_x,
-					int width,
-					int height,
-					int dpi)
+static struct calibration_info *
+create_calinfo(enum gl843_lamp source,
+		float cal_y_pos,
+		int start_x,
+		int width,
+		int height,
+		int dpi)
 {
 	struct calibration_info *cal;
 	int sc_len = width * 12;
@@ -966,9 +545,9 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 	CHK(write_reg(dev, GL843_SCANRESET, 1));
 	while(!read_reg(dev, GL843_HOMESNR))
 		usleep(10000);
-	CHK(do_base_configuration(dev));
+	CHK(setup_base(dev));
 
-	CHK(move_carriage(dev, cal_y_pos));
+	CHK(move_scanner_head(dev, cal_y_pos));
 	while (read_reg(dev, GL843_MOTORENB))
 		usleep(10000);
 
@@ -1006,7 +585,7 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 	CHK(set_lamp(dev, lamp, lamp_to));
 	CHK(send_shading(dev, cal->sc, cal->sc_len, 0));
 	CHK(select_shading(dev, SHADING_CORR_AREA));
-	CHK(move_carriage(dev, -cal_y_pos));
+	CHK(move_scanner_head(dev, -cal_y_pos));
 	while (!read_reg(dev, GL843_HOMESNR))
 		usleep(10000);
 	CHK(write_reg(dev, GL843_MTRPWR, 0));
@@ -1019,83 +598,6 @@ chk_failed:
 chk_mem_failed:
 	ret = LIBUSB_ERROR_NO_MEM;
 	goto chk_failed;	
-}
-
-static int do_move(struct gl843_device *dev)
-{
-	int ret = 0;
-	int moving = 1;
-	write_reg(dev, GL843_MOVE, 255);
-	while (moving) {
-		CHK(read_regs(dev, GL843_MOTORENB, GL843_FEDCNT, -1));
-		moving = get_reg(dev, GL843_MOTORENB);
-		printf("\rhomesnr = %d, fedcnt = %d        ",
-			get_reg(dev, GL843_HOMESNR),
-			get_reg(dev, GL843_FEDCNT));
-		usleep(1000);
-	}
-	printf("\n");
-chk_failed:
-	return ret;
-}
-
-/* Use this function to explore the scanner motor settings. */
-int do_move_test(struct gl843_device *dev,
-		 int distance,
-		 int start_speed,
-		 int end_speed,
-		 float exp,
-		 int vref)
-{
-	int ret = 0;
-	struct dbg_timer tmr;
-	struct motor_accel m;
-	enum motor_steptype step = HALF_STEP;
-
-	init_timer(&tmr, CLOCK_REALTIME);
-
-	build_accel_profile(&m, start_speed, end_speed, exp);
-	CHK(send_motor_accel(dev, 1, m.a, 1020));
-	CHK(write_reg(dev, GL843_CLRMCNT, 1));	/* Clear FEDCNT */
-
-	/* Move forward */
-
-	set_reg(dev, GL843_STEPNO, m.alen >> STEPTIM);
-	set_reg(dev, GL843_STEPTIM, STEPTIM);
-	set_reg(dev, GL843_VRMOVE, vref);
-
-	set_reg(dev, GL843_FEEDL, distance);
-	set_reg(dev, GL843_STEPSEL, step);
-
-	set_reg(dev, GL843_MTRREV, 0);
-	set_reg(dev, GL843_MTRPWR, 1);
-	CHK(flush_regs(dev));
-
-	CHK(do_move(dev));
-
-	usleep(100000);
-
-	/* Back up again */
-
-	set_reg(dev, GL843_FEEDL, distance);
-	set_reg(dev, GL843_MTRREV, 1);
-	CHK(flush_regs(dev));
-	CHK(do_move(dev));
-
-	set_reg(dev, GL843_MTRPWR, 0);
-	set_reg(dev, GL843_FULLSTP, 1);
-	CHK(flush_regs(dev));
-
-	printf("elapsed time: %f [ms]\n", get_timer(&tmr));
-
-	usleep(100000);
-
-	/* Reset, in case the motor stalled */
-
-	set_reg(dev, GL843_SCANRESET, 0);
-	flush_regs(dev);
-chk_failed:
-	return ret;
 }
 
 int reset_scanner(struct gl843_device *dev)
@@ -1127,4 +629,124 @@ int start_scan(struct gl843_device *dev)
 chk_failed:
 	return ret;
 }
+
+static size_t unshift16(uint8_t* pixels, size_t count, struct unshifter *us)
+{
+	int i, j, size;
+	size_t N;
+	int rd[3], wr;
+	uint16_t *buf, *px;
+
+	px = (uint16_t *) pixels;
+	buf = (uint16_t *) us->buf;
+	size = us->size;
+	wr = us->wr;
+	for (j = 0; j < 3; j++) {
+		rd[j] = us->rd[j];
+	}
+
+	N = 0;
+	for (i = 0; i < count; i++) {
+		/* Write into circular buffer */
+		for (j = 0; j < 3; j++) {
+			buf[wr++] = *px++;
+		}
+		wr %= size;
+
+		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
+			/* Read from circular buffer if there is enough data. */
+			for (j = 0; j < 3; j++) {
+				px[-3 + j] = buf[rd[j]];
+			}
+			N++;
+		}
+
+		for (j = 0; j < 3; j++) {
+			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
+		}
+	}
+
+	us->wr = wr;
+	for (j = 0; j < 3; j++) {
+		us->rd[j] = rd[j];
+	}
+	return N;
+}
+
+static size_t unshift8(uint8_t* pixels, size_t count, struct unshifter *us)
+{
+	int i, j, size;
+	size_t N;
+	int rd[3], wr;
+	uint8_t *buf, *px;
+
+	px = pixels;
+	buf = us->buf;
+	size = us->size;
+	wr = us->wr;
+	for (j = 0; j < 3; j++) {
+		rd[j] = us->rd[j];
+	}
+
+	N = 0;
+	for (i = 0; i < count; i++) {
+		/* Write into circular buffer */
+		for (j = 0; j < 3; j++) {
+			buf[wr++] = *px++;
+		}
+		wr %= size;
+
+		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
+			/* Read from circular buffer if there is enough data. */
+			for (j = 0; j < 3; j++) {
+				px[-3 + j] = buf[rd[j]];
+			}
+			N++;
+		}
+
+		for (j = 0; j < 3; j++) {
+			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
+		}
+	}
+
+	us->wr = wr;
+	for (j = 0; j < 3; j++) {
+		us->rd[j] = rd[j];
+	}
+	return N;
+}
+
+/* RGB pixel-shift corrector 
+ * s1: Pixel shift [pixels] to correct for first (eg red) component.
+ * s2: Pixel shift [pixels] to correct for first (eg green) component.
+ * s3: Pixel shift [pixels] to correct for first (eg blue) component.
+ * depth: Number of bits per channel, 8 or 16.
+ */
+struct unshifter *create_unshifter(int s1, int s2, int s3, int depth)
+{
+	struct unshifter *us;
+	int s_min, size;
+
+	/* Ensure at least one shift value is zero. */
+	s_min = min(min(s1, s2), s3);
+	s1 = s1 - s_min;
+	s2 = s2 - s_min;
+	s3 = s3 - s_min;
+
+	/* Create object */
+	size = max(max(s1, s2), s3);
+	us = malloc(sizeof(*us) + size * 3 * (depth / 8));
+	if (!us)
+		return NULL;
+	us->size = size;
+	us->rd[0] = -s1;
+	us->rd[1] = -s2;
+	us->rd[2] = -s3;
+	us->wr = 0;
+
+	us->unshift = (depth == 16) ? unshift16 : unshift8;
+
+	return us;
+}
+
 

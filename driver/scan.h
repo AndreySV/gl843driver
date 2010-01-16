@@ -52,8 +52,6 @@ struct unshifter
 struct unshifter *create_unshifter(int s1, int s2, int s3, int depth);
 int setup_motor(struct gl843_device *dev, struct scan_setup *ss);
 int do_warmup_scan(struct gl843_device *dev, float y_pos);
-int do_move_test(struct gl843_device *dev,
-	int distance, int start_speed, int end_speed, float exp, int vref);
 int reset_scanner(struct gl843_device *dev);
 int reset_and_move_home(struct gl843_device *dev);
 

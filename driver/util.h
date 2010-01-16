@@ -54,9 +54,6 @@
 #define DBG_msg		2	/* scanner workflow messages */
 #define DBG_warn	3	/* warnings and non-fatal errors */
 #define DBG_info	4	/* informational messages */
-#define DBG_api		5	/* SANE API entry/exits */
-#define DBG_trace	6	/* Driver tracing */
-#define DBG_trace2	7	/* Verbose driver tracing */
 #define DBG_io		8	/* io functions */
 #define DBG_io2		9	/* io functions that are called very often */
 #define DBG_data	10	/* log image data */
@@ -88,7 +85,10 @@ int __attribute__ ((pure)) host_is_big_endian(void);
 int __attribute__ ((pure)) host_is_little_endian(void);
 void swap_buffer_endianness(uint16_t *src, uint16_t *dst, int len);
 
-int mm_to_px(SANE_Fixed start, SANE_Fixed end, int dpi, int *offset);
+int __attribute__ ((pure)) mm_to_px(SANE_Fixed start, SANE_Fixed end, int dpi,
+	int *offset);
 float __attribute__ ((pure)) satf(float v, float min, float max);
+int __attribute__ ((pure)) min(int a, int b);
+int __attribute__ ((pure)) max(int a, int b);
 
 #endif /* _GL843_UTIL_H_ */

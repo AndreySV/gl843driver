@@ -49,17 +49,17 @@ int write_afe_gain(struct gl843_device *dev, int i, float g)
 	return write_afe(dev, 40 + i, afe_gain_to_val(g));
 }
 
-
 /* Set static (unchanging) hardware configuration */
-int do_base_configuration(struct gl843_device *dev)
+int setup_base(struct gl843_device *dev)
 {
 	int ret;
 
 	write_reg(dev, GL843_LAMPPWR, 0);
 
-	/* SDRAM */
-
 	struct regset_ent sdram[] = {
+
+		/* SDRAM */
+
 		/* 0x0B */
 		{ GL843_CLKSET, SYSCLK_60_MHZ },	/* sometimes 48 MHz */
 		{ GL843_ENBDRAM, 1 },	/* posedge => SDRAM power-on sequence */
@@ -224,7 +224,7 @@ int do_base_configuration(struct gl843_device *dev)
 
 		/* Unused signal processing features */
 
-		/* Hardware CCD RGB-line offsets compensation.
+		/* Hardware CCD RGB-line displacement compensation.
 		 * The Canoscan 4400F does not really have enough RAM,
 		 * so we cannot use it. It works at 300 dpi, but not
 		 * at 1200 dpi. */
@@ -294,6 +294,7 @@ int do_base_configuration(struct gl843_device *dev)
 
 	/* Init the AFE, a WM8196 */
 
+	CHK(write_afe(dev, 4, 0));
 	CHK(write_afe(dev, 1, 0x23));
 	CHK(write_afe(dev, 2, 0x24));
 	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
@@ -303,7 +304,7 @@ int do_base_configuration(struct gl843_device *dev)
 	CHK(write_afe(dev, 33, 96));
 	CHK(write_afe(dev, 34, 96));
 	/* Startup RGB gains for Canoscan 4400F */
-	CHK(write_afe(dev, 40, 75));
+	CHK(write_afe(dev, 40, 75));	/* 75 <=> g = 1.0 */
 	CHK(write_afe(dev, 41, 75));
 	CHK(write_afe(dev, 42, 75));
 #endif
@@ -323,269 +324,6 @@ int do_base_configuration(struct gl843_device *dev)
 chk_failed:
 	return ret;
 }
-
-/* Enable or disable the scanner lamp.
- *
- * state:   Lamp state. LAMP_OFF = turn off the lamp
- *                      LAMP_PLATEN = turn on the flatbed lamp
- *                      LAMP_TA = turn on the transparency adapter lamp
- * timeout: timeout, 0 - 15 minutes. 0 = no timeout, >15 => 15 minutes.
- */
-int set_lamp(struct gl843_device *dev, enum gl843_lamp state, int timeout)
-{
-	int ret;
-
-	struct regset_ent lamp1[] = {
-		{ GL843_MTLLAMP, 0 },	/* 0x05: timeout = LAMPTIM * 2^MTLLAMP */
-		{ GL843_LPWMEN, 0 },	/* 0x0A: 0 = Disable lamp PWM */
-		{ GL843_ONDUR, 159 },	/* 0x98,0x99 */
-		{ GL843_OFFDUR, 175 },	/* 0x9A,0x9B */
-	};
-	CHK(write_regs(dev, lamp1, ARRAY_SIZE(lamp1)));
-
-	if (timeout < 0)
-		timeout = 0;
-	if (timeout > 15)
-		timeout = 15;
-
-	struct regset_ent lamp2[] = {
-		/* 0x03 */
-		{ GL843_LAMPDOG, (timeout != 0) },
-		{ GL843_XPASEL, (state == LAMP_TA) },
-		{ GL843_LAMPPWR, (state != LAMP_OFF) },
-		{ GL843_LAMPTIM, timeout },
-	};
-	CHK(write_regs(dev, lamp2, ARRAY_SIZE(lamp2)));
-
-	ret = 0;
-chk_failed:
-	return ret;
-}
-
-int setup_ccd_and_afe(struct gl843_device *dev,
-		      enum gl843_pixformat fmt,
-		      unsigned int start_x,
-		      unsigned int width,
-		      int dpi,
-		      int afe_dpi,
-		      int linesel,
-		      int tgtime, int lperiod,
-		      int expr, int expg, int expb)
-{
-	int ret;
-
-	int tgw, tgshld;
-	int ck1map, ck3map, ck4map;
-	int cph, cpl, rsh, rsl;
-	int ck1mtgl, ck3mtgl;
-	int vsmp;
-	int rhi, rlow, ghi, glow, bhi, blow;
-	int strpixel, endpixel, maxwd, scanmod;
-	int deep_color, mono, use_gamma;
-
-	/* afe_dpi = resolution "seen" by the A/D converter,
-	   1:1, 1:2, 1:4 of the CCD resolution */
-
-	if (afe_dpi == 1200) {
-
-		tgw = 10;
-		tgshld = 11;
-		//tgtime = 0;		// CCD line period = LPERIOD
-
-		ck1map = 0xf838;	// 0b1111100000111000 (63544)
-		ck3map = 0xfc00;	// 0b1111110000000000 (64512)
-		ck4map = 0x92a4;	// 0b1001001010100100 (37540)
-
-		ck1mtgl = 0;
-		ck3mtgl = 0;
-
-		cph = 1; cpl = 3;
-		rsh = 0; rsl = 2;
-
-		vsmp = 11;
-		rhi = 10; rlow = 13;
-		ghi = 0; glow = 3;
-		bhi = 6; blow = 8;
-
-	} else if (afe_dpi == 2400) {
-
-		tgw = 21;
-		tgshld = 21;
-		tgtime = 1;		// CCD line period = LPERIOD * 2
-
-		ck1map = 0xff00;	// 0b1111111100000000 (65280)
-		ck3map = 0xff00;	// 0b1111111100000000 (65280)
-		ck4map = 0x5492;	// 0b0101010010010010 (21650)
-
-		ck1mtgl = 0;
-		ck3mtgl = 0;
-
-		cph = 2; cpl = 4; rsh = 0; rsl = 2;
-
-		vsmp = 10;
-		rhi = 11; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 9;
-
-	} else if (afe_dpi == 4800) {
-
-		tgw = 21;
-		tgshld = 21;
-		tgtime = 1;		// CCD line period = LPERIOD * 2
-
-		ck1map = 0xffff;	// 0b1111111111111111 (65535)
-		ck3map = 0xffff;	// 0b1111111111111111 (65535)
-		ck4map = 0x5492;	// 0b0101010010010010 (21650)
-
-		ck1mtgl = 1;
-		ck3mtgl = 1;
-
-		cph = 10; cpl = 12; rsh = 8; rsl = 10;
-
-		vsmp = 3;
-		rhi = 2; rlow = 5; ghi = 8; glow = 11; bhi = 13; blow = 15;
-	} else {
-		DBG(DBG_error0, "BUG: Unhandled afe_dpi %d\n", afe_dpi);
-		return -1;
-	}
-
-	strpixel = tgw * 32 + 2 * tgshld * 32 + start_x;
-	endpixel = strpixel + width;
-	DBG(DBG_info, "strpixel = %d, endpixel = %d\n", strpixel, endpixel);
-
-	switch (fmt) {
-	case PXFMT_LINEART:	/* 1 bit per pixel, black and white */
-	 	maxwd = ALIGN(width, 8) >> 3;
-		scanmod = 0;
-		mono = 1;
-		break;
-	case PXFMT_GRAY8:	/* 8 bits per pixel, grayscale */
-		maxwd = width;
-		scanmod = 0;
-		mono = 1;
-		break;
-	case PXFMT_GRAY16:	/* 16 bits per pixel, grayscale */
-		maxwd = width;
-		scanmod = 7;
-		mono = 1;
-		break;
-	case PXFMT_RGB8:	/* 24 bits per pixel, RGB color */
-		maxwd = width;
-		scanmod = 7;
-		mono = 0;
-		break;
-	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
-		maxwd = width;
-		scanmod = 7;
-		mono = 0;
-		break;
-	default:
-		DBG(DBG_error0, "BUG: Undefined pixel format\n");
-		return -1;
-	}
-
-	deep_color = (fmt == PXFMT_GRAY16 || fmt == PXFMT_RGB16);
-	use_gamma = (fmt != PXFMT_GRAY16 && fmt != PXFMT_RGB16);
-
-	DBG(DBG_info, "maxwd = %d, monochrome = %d, deep_color = %d, "
-		"use_gamma = %d, dpi = %d\n", maxwd, mono, deep_color,
-		use_gamma, dpi);
-
-	/* CCD and AFE settings */
-	struct regset_ent frontend[] = {
-		/* 0x04 */
-		{ GL843_BITSET, deep_color },
-		{ GL843_FILTER, mono ? 2 : 0 },	/* 0 = color, 1,2,3 = R,G,B */
-		/* 0x06 */
-		{ GL843_SCANMOD, scanmod },	/* 0 = 12 clks/px (24bit) */
-						/* 7 = 16 clks/px (48bit) */
-		/* 0x10,0x11,0x12,0x13,0x14,0x15
-		 * RGB exposure times */
-		{ GL843_EXPR, expr },
-		{ GL843_EXPG, expg },
-		{ GL843_EXPB, expb },
-		/* 0x17 */
-		{ GL843_TGMODE, 0 },
-		{ GL843_TGW, tgw },	/* CCD TG plus width = 10 or 21 */
-		/* 0x19 */
-		{ GL843_EXPDMY, 42 },
-		/* 0x1C */
-		{ GL843_CK4MTGL, 0 },
-		{ GL843_CK3MTGL, ck3mtgl },
-		{ GL843_CK1MTGL, ck1mtgl },
-		{ GL843_TGTIME, tgtime },
-		/* 0x1D */
-		{ GL843_TGSHLD, tgshld },	/* 11 or 21 */
-		/* 0x9E */
-		{ GL843_TGSTIME, 5 },	/*  TGSHLD * 2^TGSTIME */
-		{ GL843_TGWTIME, 5 },	/*  TGW * 2^TGWTIME */
-		/* 0x1E */
-		{ GL843_LINESEL, linesel },
-		/* 0x38,0x39 */
-		{ GL843_LPERIOD, lperiod },
-		/* 0x52,0x53,0x54,0x55,0x56,0x57,0x58
-		 * These depend on AFE clocks/pixel */
-		{ GL843_RHI, rhi },
-		{ GL843_RLOW, rlow },
-		{ GL843_GHI, ghi },
-		{ GL843_GLOW, glow },
-		{ GL843_BHI, bhi },
-		{ GL843_BLOW, blow },
-		{ GL843_VSMP, vsmp },
-		{ GL843_VSMPW, 3 },	/* Sampling pulse width */
-		/* 0x70,0x71,0x72,0x73 */
-		{ GL843_RSH, rsh },
-		{ GL843_RSL, rsl },
-		{ GL843_CPH, cph },
-		{ GL843_CPL, cpl },
-		/* 0x74,0x75,0x76,0x77,0x78,0x79,0x7A,0x7B,0x7C */
-		{ GL843_CK1MAP, ck1map },
-		{ GL843_CK3MAP, ck3map },
-		{ GL843_CK4MAP, ck4map },
-	};
-	CHK(write_regs(dev, frontend, ARRAY_SIZE(frontend)));
-
-	int bwlo = 128, bwhi = 128; /* TODO: Read thresholds from img struct */
-
-	struct regset_ent format[] = {
-		/* 0x2C,0x2D,0x30,0x31,0x32,0x33 */
-		{ GL843_DPISET, dpi },
-		{ GL843_STRPIXEL, strpixel },
-		{ GL843_ENDPIXEL, endpixel },
-		/* 0x34,0x35,0x36,0x37 */
-		{ GL843_DUMMY, 20 },
-		{ GL843_MAXWD, maxwd },
-
-		/* 0x04 */
-		{ GL843_LINEART, fmt == PXFMT_LINEART },
-		/* 0x2E,0x2F */
-		{ GL843_BWHI, bwhi },
-		{ GL843_BWLOW, bwlo },
-		/* 0x05 */
-		{ GL843_GMMENB, use_gamma },
-	};
-	CHK(write_regs(dev, format, ARRAY_SIZE(format)));
-	ret = 0;
-chk_failed:
-	return ret;
-}
-
-int select_shading(struct gl843_device *dev, enum gl843_shading mode)
-{
-	int ret;
-	set_reg(dev, GL843_DVDSET, mode != SHADING_CORR_OFF);	/* 0x01 */
-	set_reg(dev, GL843_SHDAREA, mode == SHADING_CORR_AREA); /* 0x01 */
-	set_reg(dev, GL843_GAIN4, 0); /* 0x06: 0/1: shading gain of 4/8. */
-	CHK(flush_regs(dev));
-	ret = 0;
-chk_failed:
-	return ret;
-}
-
-/* VREF settings used by the CS4400F:
- * VRHOME = {0, 1, 4, 5}
- * VRMOVE = {0}
- * VRBACK = {0, 1, 3, 4, 7}
- * VRSCAN = {0, 1, 4, 5}
- */
 
 /* Build an acceleration speed profile for the scanner's
  * stepping motor.
@@ -666,6 +404,607 @@ void build_accel_profile(struct motor_accel *m,
 	for (i = 0; i < m->alen; i++)
 		m->t_max += m->a[i];
 }
+
+/* Ref: gl843 datasheet, FMOVNO register
+
+Scanning with fast feed (FASTFED = 1)   Direction: ----->
+
+     moving to scan start             scanning
+
+          FEEDL               scan start            scan stop
+speed       |                      .                     .
+  |     ____v_____         SCANFED .       LINCNT        .
+  |    /          \           |    .          |          .
+  |   /            \      ____v____.__________v__________.
+  |  / <- FMOVNO -> \    /         .                      \
+  | /                \  /<- STEPNO .             FSHDEC -> \
+  |/__________________\/___________.________________________\__ distance
+
+
+Scanning without fast feed (FASTFED = 0)   Direction : ----->
+
+                              scan start            scan stop
+speed                              .                     .
+  |                FEEDL           .       LINCNT        .
+  |                  |             .          |          .
+  |   _______________v_____________.__________v__________.
+  |  /                             .                      \
+  | / <- STEPNO                    .             FSHDEC -> \
+  |/_______________________________.________________________\__ distance
+
+
+
+Moving home after scanning    Direction: <-----
+
+speed
+  |____________________________________________________________ distance
+  |\                                                        /
+  | \                                                      /
+  |  \ <- DECSEL,                               FMOVNO -> /
+  |   \   FMOVDEC or FMOVNO (see LONGCURV)               /
+  |    \________________________________________________/
+
+
+
+Scanner backtracking when the buffer is full
+
+  |     scan start        buffer full
+  |            .  FWDSTEP   .
+  |            .      |     .
+  |            .______v_____.       direction: ------>
+  |           /              \
+  |          / <-- STEPNO --> \
+  |_________/__________________\______
+  |         \                  /
+  |          \  <- FASTNO ->  /
+  |           \              /
+  |            \  BWDSTEP   /       direction: <-----
+  |             \    |     /
+  |              \___v____/
+
+STEPNO:  Number of acceleration steps before scanning,  in motor table 1.
+FASTNO:  Number of acceleration steps in backtracking,  in motor table 2.
+FSHDEC:  Number of deceleration steps after scanning,   in motor table 3.
+FMOVNO:  Number of acceleration steps for fast feeding, in motor table 4.
+FMOVDEC: Number of deceleration steps for auto-go-home, in motor table 5.
+LONGCURV: If 0, FMOVNO and table 4 control deceleration for auto-go-home.
+          If 1, FMOVDEC, and table 5 control deceleration for auto-go-home.
+          See "Wall-hitting protection" in GL843 datasheet.
+FEEDL:   Number of feeding steps.
+SCANFED: Number of feeding steps before scanning.
+LINCNT:  Number of lines (steps) to scan.
+FWDSTEP:
+BWDSTEP:
+STEPTIM: Multiplier for STEPNO, FASTNO, FSHDEC, FMOVNO, FMOVDEC,
+         SCANFED, FWDSTEP, and BWDSTEP
+         The actual number of steps in each table or register is
+         <step_count> * 2^STEPTIM.
+DECSEL:  Number of deceleration steps after touching home sensor.
+         (Actual number of steps is 2^DECSEL.)
+STEPSEL: Motor step type for tables 1, 2 and 3
+FSTPSEL: Motor step type for tables 4 and 5
+*/
+
+int setup_motor(struct gl843_device *dev, struct scan_setup *ss)
+{
+	int ret;
+
+	struct motor_accel move; /* for moving out and home */
+	struct motor_accel scan; /* for scanning and backtracking */
+
+	const int scanfeed = 1020;
+	int feedl, z1mod, z2mod, lperiod;
+
+	lperiod = ss->lperiod << ss->tgtime;
+
+	build_accel_profile(&move, 28597, ss->c_move, 1.5);
+	build_accel_profile(&scan, 24576, ss->c_scan, 1.5);
+
+	struct regset_ent motor[] = {
+		{ GL843_STEPTIM, STEPTIM },
+		{ GL843_MULSTOP, 0 },
+		{ GL843_DECSEL, 1 },
+		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
+		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
+		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
+		{ GL843_MTRREV, 0 }, /* 0 = forward motion */
+		/* Scanning (table 1, 2 and 3) */
+		{ GL843_STOPTIM, 31 },
+		{ GL843_STEPSEL, ss->steptype },
+		{ GL843_STEPNO, scan.alen >> STEPTIM },
+		{ GL843_FSHDEC, scan.alen >> STEPTIM },
+		{ GL843_FASTNO, scan.alen >> STEPTIM },
+		/* Fast moving (table 4) */
+		{ GL843_FSTPSEL, ss->steptype },
+		{ GL843_FMOVNO, move.alen >> STEPTIM },
+		{ GL843_FMOVDEC, move.alen >> STEPTIM },
+
+		/* TODO: Set up proper vref values.
+
+		This is the win-driver set:
+
+		platen settings, 75 - 1200 dpi:
+		  75 dpi: VRHOME = 0, VRMOVE = 0, VRBACK = 7, VRSCAN = 0
+		 150 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
+		 300 dpi: VRHOME = 5, VRMOVE = 0, VRBACK = 7, VRSCAN = 5
+		 600 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
+		1200 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 4
+
+		film settings, 1200 - 9600 dpi:
+			  VRHOME = 1, VRMOVE = 0, VRBACK = 1, VRSCAN = 4
+		*/
+
+		{ GL843_VRSCAN, 4 },
+		{ GL843_VRBACK, 7 },
+		{ GL843_VRMOVE, 5 },
+		{ GL843_VRHOME, 5 },
+	};
+	CHK(write_regs(dev, motor, ARRAY_SIZE(motor)));
+
+	feedl = ss->start_y; /* Assume scanner head is at home */
+	feedl = feedl - (2*move.alen + scan.alen + scanfeed);
+	if (feedl > 0) {
+		/* Set up fast moving before scanning. */
+		set_reg(dev, GL843_FASTFED, 1);
+		set_reg(dev, GL843_SCANFED, scanfeed >> STEPTIM);
+		z2mod = (scan.t_max + scan.a[scan.alen - 1] * scanfeed) % lperiod;
+		DBG(DBG_info, "   fast move: accel=%d + feed=%d + decel=%d\n",
+			move.alen, feedl, move.alen);
+		DBG(DBG_info, "+ scan start: accel=%d + feed=%d = %d steps\n",
+			scan.alen, scanfeed,
+			move.alen + feedl + move.alen + scan.alen + scanfeed);
+	} else {
+		/* Don't use fast moving before scanning - not enough room. */
+		set_reg(dev, GL843_FASTFED, 0);
+		feedl = ss->start_y;
+		feedl -= scan.alen;
+		if (feedl < 1) {
+			DBG(DBG_warn, "Cannot start scan early enough.\n");
+			DBG(DBG_warn, "Skipping %d lines at the top.\n",
+				1 - feedl);
+			ss->height -= (1 - feedl);
+			if (ss->height < 1)
+				ss->height = 1;
+			feedl = 1;
+		}
+
+		DBG(DBG_info, "scan start: accel=%d + feed=%d = %d steps\n",
+			scan.alen, feedl, scan.alen + feedl);
+		z2mod = (scan.t_max + scan.a[scan.alen - 1] * feedl) % lperiod;
+	}
+
+	set_reg(dev, GL843_FEEDL, feedl);
+	set_reg(dev, GL843_LINCNT, ss->height);
+	set_reg(dev, GL843_Z2MOD, z2mod);
+
+	if (ss->backtrack > 0) {
+		ss->backtrack = ALIGN(ss->backtrack, 1 << STEPTIM);
+		z1mod = (scan.t_max + scan.a[scan.alen - 1] * ss->backtrack) % lperiod;
+		set_reg(dev, GL843_FWDSTEP, ss->backtrack >> STEPTIM);
+		set_reg(dev, GL843_BWDSTEP, ss->backtrack >> STEPTIM);
+		set_reg(dev, GL843_Z1MOD, z1mod);
+		set_reg(dev, GL843_ACDCDIS, 0);
+	} else {
+		set_reg(dev, GL843_ACDCDIS, 1); /* Disable backtracking. */
+	}
+
+	CHK(flush_regs(dev));
+
+	CHK(send_motor_accel(dev, 1, scan.a, 1020));
+	CHK(send_motor_accel(dev, 2, scan.a, 1020));
+	CHK(send_motor_accel(dev, 3, scan.a, 1020));
+	CHK(send_motor_accel(dev, 4, move.a, 1020));
+
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+/* Move the scanner head without scanning.
+ *
+ * This function moves the scanner head to a calibration or
+ * lamp warmup position, or back home once completed.
+ *
+ * d: moving distance in inches. > 0: forward, < 0: back
+ *    WARNING: A bad value for d can crash the carriage into the wall.
+ */
+int move_scanner_head(struct gl843_device *dev, float d)
+{
+	int ret;
+	int feedl;
+	struct motor_accel move;
+
+	feedl = (int)(4800 * d + 0.5);
+	if (feedl >= 0) {
+		set_reg(dev, GL843_MTRREV, 0);
+	} else {
+		set_reg(dev, GL843_MTRREV, 1);
+		feedl = -feedl;
+	}
+
+	build_accel_profile(&move, 24576, 240, 1.5);
+
+	/* Subtract acceleration and deceleration distances */
+	feedl = feedl - 2 * move.alen;
+	if (feedl < 0) {
+		/* The acceleration/deceleration curves are longer than
+		 * the distance we wish to move. Set feedl = 0 and trim
+		 * the curves to desired lengths. */
+		move.alen = (feedl + 2 * move.alen) / 2;
+		feedl = 0;
+	}
+
+	struct regset_ent motor1[] = {
+		/* Misc */
+		{ GL843_STEPTIM, STEPTIM },
+		{ GL843_MULSTOP, 0 },
+		{ GL843_STOPTIM, 0 },
+		{ GL843_DECSEL, 1 },
+		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
+		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
+		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
+		/* Scanning (table 1 and 3)*/
+		{ GL843_STEPSEL, HALF_STEP },
+		{ GL843_STEPNO, 1 },
+		{ GL843_FSHDEC, 1 },
+		/* Backtracking (table 2) */
+		{ GL843_FASTNO, 1 },
+		{ GL843_ACDCDIS, 1 }, /* Disable backtracking. */
+		/* Fast feeding  */
+		{ GL843_FSTPSEL, HALF_STEP },
+		{ GL843_FMOVNO, move.alen >> STEPTIM },
+		{ GL843_FMOVDEC, move.alen >> STEPTIM },
+		{ GL843_DECSEL, 1 },
+		{ GL843_FASTFED, 1 },
+		{ GL843_SCANFED, 0 },
+		{ GL843_FEEDL, feedl },
+		{ GL843_LINCNT, 0 },
+		{ GL843_Z1MOD, 0 },
+		{ GL843_Z2MOD, 0 },
+
+		{ GL843_VRSCAN, 3 },
+		{ GL843_VRBACK, 3 },
+		{ GL843_VRMOVE, 5 },
+		{ GL843_VRHOME, 5 },
+	};
+	CHK(write_regs(dev, motor1, ARRAY_SIZE(motor1)));
+
+	CHK(send_motor_accel(dev, 1, move.a, 1020));
+	CHK(send_motor_accel(dev, 2, move.a, 1020));
+	CHK(send_motor_accel(dev, 3, move.a, 1020));
+	CHK(send_motor_accel(dev, 4, move.a, 1020));
+
+	CHK(write_reg(dev, GL843_MTRPWR, 1));
+	CHK(write_reg(dev, GL843_SCAN, 0));
+	CHK(write_reg(dev, GL843_MOVE, 16));
+
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
+{
+	int ret;
+
+	int tgw, tgshld;
+	int ck1map, ck3map, ck4map;
+	int cph, cpl, rsh, rsl;
+	int ck1mtgl, ck3mtgl;
+	int vsmp;
+	int rhi, rlow, ghi, glow, bhi, blow;
+	int strpixel, endpixel, maxwd, scanmod;
+	int deep_color, mono, use_gamma;
+
+	/* afe_dpi = resolution "seen" by the A/D converter,
+	   1:1, 1:2, 1:4 of the CCD resolution */
+
+	if (ss->afe_dpi == 1200) {
+
+		tgw = 10;
+		tgshld = 11;
+
+		ck1map = 0xf838;	// 0b1111100000111000 (63544)
+		ck3map = 0xfc00;	// 0b1111110000000000 (64512)
+		ck4map = 0x92a4;	// 0b1001001010100100 (37540)
+
+		ck1mtgl = 0;
+		ck3mtgl = 0;
+
+		cph = 1; cpl = 3;
+		rsh = 0; rsl = 2;
+
+		vsmp = 11;
+		rhi = 10; rlow = 13;
+		ghi = 0; glow = 3;
+		bhi = 6; blow = 8;
+
+	} else if (ss->afe_dpi == 2400) {
+
+		tgw = 21;
+		tgshld = 21;
+
+		ck1map = 0xff00;	// 0b1111111100000000 (65280)
+		ck3map = 0xff00;	// 0b1111111100000000 (65280)
+		ck4map = 0x5492;	// 0b0101010010010010 (21650)
+
+		ck1mtgl = 0;
+		ck3mtgl = 0;
+
+		cph = 2; cpl = 4; rsh = 0; rsl = 2;
+
+		vsmp = 10;
+		rhi = 11; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 9;
+
+	} else if (ss->afe_dpi == 4800) {
+
+		tgw = 21;
+		tgshld = 21;
+
+		ck1map = 0xffff;	// 0b1111111111111111 (65535)
+		ck3map = 0xffff;	// 0b1111111111111111 (65535)
+		ck4map = 0x5492;	// 0b0101010010010010 (21650)
+
+		ck1mtgl = 1;
+		ck3mtgl = 1;
+
+		cph = 10; cpl = 12; rsh = 8; rsl = 10;
+
+		vsmp = 3;
+		rhi = 2; rlow = 5; ghi = 8; glow = 11; bhi = 13; blow = 15;
+	} else {
+		DBG(DBG_error0, "BUG: Unhandled afe_dpi %d\n", ss->afe_dpi);
+		return -1;
+	}
+
+	strpixel = tgw * 32 + 2 * tgshld * 32 + ss->start_x;
+	endpixel = strpixel + ss->width;
+	DBG(DBG_info, "strpixel = %d, endpixel = %d\n", strpixel, endpixel);
+
+	switch (ss->fmt) {
+	case PXFMT_LINEART:	/* 1 bit per pixel, black and white */
+	 	maxwd = ALIGN(ss->width, 8) >> 3;
+		scanmod = 0;
+		mono = 1;
+		break;
+	case PXFMT_GRAY8:	/* 8 bits per pixel, grayscale */
+		maxwd = ss->width;
+		scanmod = 0;
+		mono = 1;
+		break;
+	case PXFMT_GRAY16:	/* 16 bits per pixel, grayscale */
+		maxwd = ss->width;
+		scanmod = 7;
+		mono = 1;
+		break;
+	case PXFMT_RGB8:	/* 24 bits per pixel, RGB color */
+		maxwd = ss->width;
+		scanmod = 7;
+		mono = 0;
+		break;
+	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
+		maxwd = ss->width;
+		scanmod = 7;
+		mono = 0;
+		break;
+	default:
+		DBG(DBG_error0, "BUG: Undefined pixel format\n");
+		return -1;
+	}
+
+	deep_color = (ss->fmt == PXFMT_GRAY16 || ss->fmt == PXFMT_RGB16);
+	use_gamma = (ss->fmt != PXFMT_GRAY16 && ss->fmt != PXFMT_RGB16);
+
+	DBG(DBG_info, "maxwd = %d, monochrome = %d, deep_color = %d, "
+		"use_gamma = %d, dpi = %d\n", maxwd, mono, deep_color,
+		use_gamma, ss->dpi);
+
+	/* CCD and AFE settings */
+	struct regset_ent frontend[] = {
+		/* 0x04 */
+		{ GL843_BITSET, deep_color },
+		{ GL843_FILTER, mono ? 2 : 0 },	/* 0 = color, 1,2,3 = R,G,B */
+		/* 0x06 */
+		{ GL843_SCANMOD, scanmod },	/* 0 = 12 clks/px (24bit) */
+						/* 7 = 16 clks/px (48bit) */
+		/* 0x10,0x11,0x12,0x13,0x14,0x15
+		 * RGB exposure times */
+		{ GL843_EXPR, ss->expr },
+		{ GL843_EXPG, ss->expg },
+		{ GL843_EXPB, ss->expb },
+		/* 0x17 */
+		{ GL843_TGMODE, 0 },
+		{ GL843_TGW, tgw },	/* CCD TG plus width = 10 or 21 */
+		/* 0x19 */
+		{ GL843_EXPDMY, 42 },
+		/* 0x1C */
+		{ GL843_CK4MTGL, 0 },
+		{ GL843_CK3MTGL, ck3mtgl },
+		{ GL843_CK1MTGL, ck1mtgl },
+		{ GL843_TGTIME, ss->tgtime },
+		/* 0x1D */
+		{ GL843_TGSHLD, tgshld },	/* 11 or 21 */
+		/* 0x9E */
+		{ GL843_TGSTIME, 5 },	/*  TGSHLD * 2^TGSTIME */
+		{ GL843_TGWTIME, 5 },	/*  TGW * 2^TGWTIME */
+		/* 0x1E */
+		{ GL843_LINESEL, ss->linesel },
+		/* 0x38,0x39 */
+		{ GL843_LPERIOD, ss->lperiod },
+		/* 0x52,0x53,0x54,0x55,0x56,0x57,0x58
+		 * These depend on AFE clocks/pixel */
+		{ GL843_RHI, rhi },
+		{ GL843_RLOW, rlow },
+		{ GL843_GHI, ghi },
+		{ GL843_GLOW, glow },
+		{ GL843_BHI, bhi },
+		{ GL843_BLOW, blow },
+		{ GL843_VSMP, vsmp },
+		{ GL843_VSMPW, 3 },	/* Sampling pulse width */
+		/* 0x70,0x71,0x72,0x73 */
+		{ GL843_RSH, rsh },
+		{ GL843_RSL, rsl },
+		{ GL843_CPH, cph },
+		{ GL843_CPL, cpl },
+		/* 0x74,0x75,0x76,0x77,0x78,0x79,0x7A,0x7B,0x7C */
+		{ GL843_CK1MAP, ck1map },
+		{ GL843_CK3MAP, ck3map },
+		{ GL843_CK4MAP, ck4map },
+	};
+	CHK(write_regs(dev, frontend, ARRAY_SIZE(frontend)));
+
+	struct regset_ent format[] = {
+		/* 0x2C,0x2D,0x30,0x31,0x32,0x33 */
+		{ GL843_DPISET, ss->dpi },
+		{ GL843_STRPIXEL, strpixel },
+		{ GL843_ENDPIXEL, endpixel },
+		/* 0x34,0x35,0x36,0x37 */
+		{ GL843_DUMMY, 20 },
+		{ GL843_MAXWD, maxwd },
+
+		/* 0x04 */
+		{ GL843_LINEART, ss->fmt == PXFMT_LINEART },
+		/* 0x2E,0x2F */
+		{ GL843_BWHI, ss->bwhi },
+		{ GL843_BWLOW, ss->bwlo },
+		/* 0x05 */
+		{ GL843_GMMENB, use_gamma },
+	};
+	CHK(write_regs(dev, format, ARRAY_SIZE(format)));
+
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+int select_shading(struct gl843_device *dev, enum gl843_shading mode)
+{
+	int ret;
+	set_reg(dev, GL843_DVDSET, mode != SHADING_CORR_OFF);	/* 0x01 */
+	set_reg(dev, GL843_SHDAREA, mode == SHADING_CORR_AREA); /* 0x01 */
+	set_reg(dev, GL843_GAIN4, 0); /* 0x06: 0/1: shading gain of 4/8. */
+	CHK(flush_regs(dev));
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+/* Enable or disable the scanner lamp.
+ *
+ * state:   Lamp state. LAMP_OFF = turn off the lamp
+ *                      LAMP_PLATEN = turn on the flatbed lamp
+ *                      LAMP_TA = turn on the transparency adapter lamp
+ * timeout: timeout, 0 - 15 minutes. 0 = no timeout, >15 => 15 minutes.
+ */
+int set_lamp(struct gl843_device *dev, enum gl843_lamp state, int timeout)
+{
+	int ret;
+
+	struct regset_ent lamp1[] = {
+		{ GL843_MTLLAMP, 0 },	/* 0x05: timeout = LAMPTIM * 2^MTLLAMP */
+		{ GL843_LPWMEN, 0 },	/* 0x0A: 0 = Disable lamp PWM */
+		{ GL843_ONDUR, 159 },	/* 0x98,0x99 */
+		{ GL843_OFFDUR, 175 },	/* 0x9A,0x9B */
+	};
+	CHK(write_regs(dev, lamp1, ARRAY_SIZE(lamp1)));
+
+	if (timeout < 0)
+		timeout = 0;
+	if (timeout > 15)
+		timeout = 15;
+
+	struct regset_ent lamp2[] = {
+		/* 0x03 */
+		{ GL843_LAMPDOG, (timeout != 0) },
+		{ GL843_XPASEL, (state == LAMP_TA) },
+		{ GL843_LAMPPWR, (state != LAMP_OFF) },
+		{ GL843_LAMPTIM, timeout },
+	};
+	CHK(write_regs(dev, lamp2, ARRAY_SIZE(lamp2)));
+
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+#if 0
+static int do_move(struct gl843_device *dev)
+{
+	int ret = 0;
+	int moving = 1;
+	write_reg(dev, GL843_MOVE, 255);
+	while (moving) {
+		CHK(read_regs(dev, GL843_MOTORENB, GL843_FEDCNT, -1));
+		moving = get_reg(dev, GL843_MOTORENB);
+		printf("\rhomesnr = %d, fedcnt = %d        ",
+			get_reg(dev, GL843_HOMESNR),
+			get_reg(dev, GL843_FEDCNT));
+		usleep(1000);
+	}
+	printf("\n");
+chk_failed:
+	return ret;
+}
+
+/* Use this function to explore the scanner motor settings. */
+int do_move_test(struct gl843_device *dev,
+		 int distance,
+		 int start_speed,
+		 int end_speed,
+		 float exp,
+		 int vref)
+{
+	int ret = 0;
+	struct dbg_timer tmr;
+	struct motor_accel m;
+	enum motor_steptype step = HALF_STEP;
+
+	init_timer(&tmr, CLOCK_REALTIME);
+
+	build_accel_profile(&m, start_speed, end_speed, exp);
+	CHK(send_motor_accel(dev, 1, m.a, 1020));
+	CHK(write_reg(dev, GL843_CLRMCNT, 1));	/* Clear FEDCNT */
+
+	/* Move forward */
+
+	set_reg(dev, GL843_STEPNO, m.alen >> STEPTIM);
+	set_reg(dev, GL843_STEPTIM, STEPTIM);
+	set_reg(dev, GL843_VRMOVE, vref);
+
+	set_reg(dev, GL843_FEEDL, distance);
+	set_reg(dev, GL843_STEPSEL, step);
+
+	set_reg(dev, GL843_MTRREV, 0);
+	set_reg(dev, GL843_MTRPWR, 1);
+	CHK(flush_regs(dev));
+
+	CHK(do_move(dev));
+
+	usleep(100000);
+
+	/* Back up again */
+
+	set_reg(dev, GL843_FEEDL, distance);
+	set_reg(dev, GL843_MTRREV, 1);
+	CHK(flush_regs(dev));
+	CHK(do_move(dev));
+
+	set_reg(dev, GL843_MTRPWR, 0);
+	set_reg(dev, GL843_FULLSTP, 1);
+	CHK(flush_regs(dev));
+
+	printf("elapsed time: %f [ms]\n", get_timer(&tmr));
+
+	usleep(100000);
+
+	/* Reset, in case the motor stalled */
+
+	set_reg(dev, GL843_SCANRESET, 0);
+	flush_regs(dev);
+chk_failed:
+	return ret;
+}
+#endif
 
 #if 0
 	/* Command flags */
@@ -759,37 +1098,4 @@ one can be sure that no registers are ever undefined.
 0xA6: GPIO24-17
 0xAA: undefined
 
-*/
-
-/*
-
-Film (16-bit) @ 1200 dpi:
-CPH = 0,  CPL = 2,  RSH = 0,  RSL = 2
-
-Film (16-bit) @ 2400 dpi:
-CPH = 2,  CPL = 4,  RSH = 0,  RSL = 2
-
-Film (16-bit) @ 4800 dpi:
-CPH = 10, CPL = 12, RSH = 8,  RSL = 10
-
-Platen (8-bit color) @ 50,75,100,150,200,300,400 dpi:
-CPH = 0,1,     CPL = 0,3,     RSH = 0,      RSL = 0,2
-
-Platen (8-bit color) @ 1200 dpi:
-CPH = 0,1,2,   CPL = 0,3,4,   RSH = 0,      RSL = 0,2
-
-Platen (8-bit color) @ 50 - 1200 dpi:
-CPH = 1,  CPL = 3,  RSH = 0,  RSL = 2
-
-Platen (8-bit gray or lineart) @ 300 dpi:
-CPH = 2, CPL = 4 or CPH = 1, CPL = 3. TODO: Figure out why.
-
-*/
-/*
-BHI = 13,17,6,
-BLOW = 15,2,8,9,
-GHI = 0,11,8,
-GLOW = 11,14,3,
-RHI = 10,11,2,5,
-RLOW = 13,5,8,
 */
