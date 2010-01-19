@@ -530,27 +530,42 @@ chk_mem_failed:
 int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 {
 	int ret;
+	struct scan_setup ss = {};
+	struct calibration_info *cal;
+	int lamp_to = 4; // FIXME: Get user setting
 
+	CHK(write_reg(dev, GL843_SCANRESET, 1));
+	while(!read_reg(dev, GL843_HOMESNR))
+		usleep(10000);
+
+	CHK(setup_static(dev));
+
+	CHK(move_scanner_head(dev, cal_y_pos));
+	while (read_reg(dev, GL843_MOTORENB))
+		usleep(10000);
+
+	// FIXME: Get user setting
+	ss.source = LAMP_PLATEN;
+	ss.fmt = PXFMT_RGB16;
+	ss.dpi = 1200;
+	ss.start_x = 128;
+	ss.width = 10208;
+	ss.height = 16;
+
+	CHK(setup_common(dev, &ss));
+	CHK(setup_horizontal(dev, &ss));
+
+	CHK_MEM(cal = create_calinfo(ss.source, cal_y_pos,
+		ss.start_x, ss.width, ss.height, ss.dpi));
+
+#if 0 
+Old stuff
 	enum gl843_lamp lamp = LAMP_PLATEN;
 	int lamp_to = 4;
 	int start_x = 128;
 	int width = 10208;
 	int height = 16;
 	int dpi = 4800;
-
-	struct calibration_info *cal;
-
-	CHK_MEM(cal = create_calinfo(lamp, cal_y_pos, start_x, width, height, dpi));
-
-	CHK(write_reg(dev, GL843_SCANRESET, 1));
-	while(!read_reg(dev, GL843_HOMESNR))
-		usleep(10000);
-	CHK(setup_base(dev));
-
-	CHK(move_scanner_head(dev, cal_y_pos));
-	while (read_reg(dev, GL843_MOTORENB))
-		usleep(10000);
-
 	CHK(setup_ccd_and_afe(dev,
 			/* fmt */ PXFMT_RGB16,
 			/* start_x */ start_x,
@@ -561,6 +576,7 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 		  	/* tgtime */ 0,
 			/* lperiod */ 11640,
 			/* expr,g,b */ 40000, 40000, 40000));
+#endif
 
 	CHK(select_shading(dev, SHADING_CORR_OFF));
 
@@ -578,11 +594,11 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 
 	CHK(set_lamp(dev, LAMP_OFF, 0));
 	CHK(calc_afe_blacklevel(dev, cal, 75, 0));
-	CHK(set_lamp(dev, lamp, lamp_to));
+	CHK(set_lamp(dev, ss.source, lamp_to));
 	CHK(warm_up_lamp(dev, cal));
 	CHK(calc_afe_gain(dev, cal));
 	CHK(calc_shading(dev, cal));
-	CHK(set_lamp(dev, lamp, lamp_to));
+	CHK(set_lamp(dev, ss.source, lamp_to));
 	CHK(send_shading(dev, cal->sc, cal->sc_len, 0));
 	CHK(select_shading(dev, SHADING_CORR_AREA));
 	CHK(move_scanner_head(dev, -cal_y_pos));

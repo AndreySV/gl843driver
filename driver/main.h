@@ -126,8 +126,7 @@ typedef struct
 	const SANE_Int *bit_depths;
 	SANE_Int depth;		/* Bits per channel */
 	const SANE_Int *resolutions;
-	SANE_Int x_dpi;		/* Horizontal resolution [dots per inch] */
-	SANE_Int y_dpi;		/* Vertical resolution [dots per inch] */
+	SANE_Int dpi;		/* Scan resolution [dots per inch] */
 
 	/* Gamma correction tables */
 

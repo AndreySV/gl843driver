@@ -66,7 +66,7 @@ int main()
 	write_reg(dev, GL843_CLRLNCNT, 1);
 	write_reg(dev, GL843_FULLSTP, 1);
 
-//	do_warmup_scan(dev, 0.3);
+//	do_warmup_scan(dev, 8.0);
 	do_move_test(dev, 10000, 24576/2, 175, 1.5, 5);
 
 	libusb_close(dev->usbdev);

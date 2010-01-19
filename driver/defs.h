@@ -46,7 +46,7 @@ enum motor_steptype {
 	EIGHTH_STEP = 3
 };
 
-/* This must be 2. See build_motor_table() */
+/* This must be 2 to get the biggest possible accel tables (1020 entries). */
 #define STEPTIM 2
 /* Must be 1020 (hardware limit). */
 #define MTRTBL_SIZE 1020
@@ -62,21 +62,25 @@ struct motor_accel {
 };
 
 struct scan_setup {
+
+	/* Generic parameters */
+
+	enum gl843_lamp source;
 	enum gl843_pixformat fmt;
 	int dpi;
-	int afe_dpi;
-	enum motor_steptype steptype;
 	int start_x;		/* Pixels from left edge */
 	int width;		/* Pixels per line */
 	int start_y;		/* Steps from top edge */
 	int height;		/* Lines */
+	float bwthr;		/* Black/white threshold (0.0 - 1.0) */
+	float bwhys;		/* Black/white hysteresis (0.0 - 1.0) */
+	int use_backtracking;
+
+	/* Hardware-specific parameters */
+
+	enum motor_steptype steptype;
+	int lperiod;
 	int linesel;
-	int tgtime, lperiod;	/* line period = 2^tgtime * lperiod */
-	int expr, expg, expb;	/* Exposure time */
-	int c_move;
-	int c_scan;
-	int backtrack;		/* Backtracking steps */
-	int bwhi, bwlo;		/* Black/white high and low thresholds */
 };
 
 extern int usleep();

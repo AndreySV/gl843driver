@@ -100,7 +100,7 @@ static int find_constraint_string(SANE_String s, const SANE_String_Const *string
 			return i;
 	}
 	DBG(DBG_error0, "BUG: unknown constraint string %s\n", s);
-	return 0;
+	return 0; /* Default to first string */
 }
 
 /* Get index of constraint v in word array */
@@ -113,7 +113,7 @@ static int find_constraint_value(SANE_Word v, const SANE_Word *values)
 			return i;
 	}
 	DBG(DBG_error0, "BUG: unknown constraint value %d\n", v);
-	return 1;
+	return 1; /* Default to first value */
 }
 
 static SANE_Word *create_gamma(int N, float gamma)
@@ -201,9 +201,7 @@ static CS4400F_Scanner *create_CS4400F()
 
 	s->mode = SANE_FRAME_RGB;
 	s->depth = 16;
-
-	s->x_dpi = 300;
-	s->y_dpi = 300;
+	s->dpi = 300;
 
 	s->use_gamma = SANE_FALSE;
 	s->gamma_range  = (SANE_Range){ 0, 65535, 0 };
@@ -467,7 +465,7 @@ static void dump_scan_settings(CS4400F_Scanner *s)
 	DBG(DBG_info, "       mode: %s\n", s->mode_names[i]);
 	DBG(DBG_info, "     source: %s\n", s->source_names[j]);
 	DBG(DBG_info, "      depth: %d [bits]\n", s->depth);
-	DBG(DBG_info, " resolution: %d [dpi]\n", s->x_dpi);
+	DBG(DBG_info, " resolution: %d [dpi]\n", s->dpi);
 	DBG(DBG_info, "        top: %.1f [mm]\n", SANE_UNFIX(s->tl_y));
 	DBG(DBG_info, "       left: %.1f [mm]\n", SANE_UNFIX(s->tl_x));
 	DBG(DBG_info, "     bottom: %.1f [mm]\n", SANE_UNFIX(s->br_y));
@@ -650,7 +648,7 @@ static SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scann
 	CHK(libusb_claim_interface(h, 0));
 	CHK_MEM(s = create_CS4400F());
 	CHK_MEM(s->hw = create_gl843dev(h));
-	CHK(setup_base(s->hw));
+	CHK(setup_static(s->hw));
 
 	*scanner = s;
 	return SANE_STATUS_GOOD;
@@ -706,7 +704,7 @@ void sane_close(SANE_Handle handle)
 {
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	if (s) {
-		write_reg(s->hw, GL843_SCANRESET, 1);
+		reset_scanner(s->hw);
 		destroy_scanner(s);
 	}
 }
@@ -770,7 +768,7 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			val->w = s->depth;
 			break;
 		case OPT_RESOLUTION:
-			val->w = s->x_dpi;
+			val->w = s->dpi;
 			break;
 		case OPT_TL_X:
 			val->w = s->tl_x;
@@ -848,9 +846,8 @@ SANE_Status sane_control_option(SANE_Handle handle,
 			flags |= SANE_INFO_RELOAD_PARAMS;
 			break;
 		case OPT_RESOLUTION:
-			s->need_shading |= (s->x_dpi != val->w);
-			s->x_dpi = val->w;
-			s->y_dpi = val->w;
+			s->need_shading |= (s->dpi != val->w);
+			s->dpi = val->w;
 			flags |= SANE_INFO_RELOAD_PARAMS;
 			break;
 		case OPT_TL_X:
@@ -942,11 +939,11 @@ SANE_Status sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
 
 	params->format = s->mode;
 	params->last_frame = SANE_TRUE;
-	params->pixels_per_line = mm_to_px(s->tl_x, s->br_x, s->x_dpi, NULL);
+	params->pixels_per_line = mm_to_px(s->tl_x, s->br_x, s->dpi, NULL);
 	params->bytes_per_line = (params->pixels_per_line * s->depth + 7) / 8;
 	if (s->mode == SANE_FRAME_RGB)
 		params->bytes_per_line *=  3;
-	params->lines = mm_to_px(s->tl_y, s->br_y, s->y_dpi, NULL);
+	params->lines = mm_to_px(s->tl_y, s->br_y, s->dpi, NULL);
 	params->depth = s->depth;
 
 	return SANE_STATUS_GOOD;
@@ -968,7 +965,6 @@ SANE_Status sane_start(SANE_Handle handle)
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	SANE_Parameters p;
 	struct scan_setup ss = {};
-	float bwthr, bwhys;
 
 	sane_get_parameters(s, &p);
 
@@ -977,56 +973,47 @@ SANE_Status sane_start(SANE_Handle handle)
 		return SANE_STATUS_INVAL;
 	}
 
+	ss.source = s->source;
 	ss.fmt = s->depth * (s->mode == SANE_FRAME_RGB ? 3 : 1);
-	/* TODO: replace gl843_pixformat in lower layers with
-	 * SANE_Frame and depth once everything else works */
-	ss.dpi = s->x_dpi;	/* y_dpi = x_dpi for now. */
-	ss.afe_dpi = 1200; /* TODO: Set up properly */
-	ss.steptype = (ss.dpi <= 1200) ? HALF_STEP : QUARTER_STEP;
+	ss.dpi = s->dpi;
 
-	ss.start_x = mm_to_px(SANE_FIX(0.0), s->x_start + s->tl_x, s->x_dpi, NULL);
+	ss.start_x = mm_to_px(SANE_FIX(0.0), s->x_start + s->tl_x, s->dpi, NULL);
 	ss.width = p.pixels_per_line;
-	ss.start_y = mm_to_px(SANE_FIX(0.0), s->y_start + s->tl_y, s->x_dpi, NULL);
+	ss.start_y = mm_to_px(SANE_FIX(0.0), s->y_start + s->tl_y, s->dpi, NULL);
 	ss.height = p.lines;
 
-	ss.c_move = (ss.steptype == HALF_STEP) ? 180 : 90;
-	ss.c_scan = 5000; /* TODO */
+	ss.bwthr = SANE_UNFIX(s->bw_threshold) * 255 / 100;
+	ss.bwhys = SANE_UNFIX(s->bw_hysteresis) * 255 / 100;
 
-	ss.expr = 40000;
-	ss.expg = 40000;
-	ss.expb = 40000;
-
-	bwthr = SANE_UNFIX(s->bw_threshold) * 255 / 100;
-	bwhys = SANE_UNFIX(s->bw_hysteresis) * 255 / 100;
-	ss.bwhi = (int) satf(bwthr + (bwhys / 2) + 0.5, 0, 255);
-	ss.bwlo = (int) satf(bwthr - (bwhys / 2) + 0.5, 0, 255);
-
-	if (s->source == LAMP_PLATEN) {
-		ss.linesel = (ss.dpi < 1200) ? 0 : 1;
-		ss.tgtime = 0;
-		ss.lperiod = 11640;
-		ss.backtrack = (ss.dpi < 1200) ? 200 : 100;
-	} else { /* if (s->source == LAMP_TA) { */
-		ss.linesel = 0;
-		ss.tgtime = 1;
-		ss.lperiod = 44400;	/* line period = 2^tgtime * lperiod */
-		ss.backtrack = (ss.dpi > 1200) ? 50 : 100;
-	}
+	ss.use_backtracking = 0; /* TODO: Make user controllable */
 
 	/* TODO: Gamma correction */
 	/* TODO: Warmup */
 	/* TODO: Shading correction setup */
 
+	CHK(setup_static(s->hw));
 	CHK(reset_and_move_home(s->hw));
 
-	CHK(setup_motor(s->hw, &ss));
-	CHK(setup_frontend(s->hw, &ss));
+	CHK(move_scanner_head(s->hw, 7));
+	while (read_reg(s->hw, GL843_MOTORENB))
+		usleep(10000);
 
-	CHK(select_shading(s->hw, SHADING_CORR_OFF));
+	CHK(move_scanner_head(s->hw, -7));
+	while (read_reg(s->hw, GL843_MOTORENB))
+		usleep(10000);
+
+	CHK(reset_and_move_home(s->hw));
+
+//	CHK(setup_common(s->hw, &ss));
+//	CHK(setup_horizontal(s->hw, &ss));
+//	CHK(setup_vertical(s->hw, &ss, 1));
+
+//	CHK(select_shading(s->hw, SHADING_CORR_OFF));
 
 	dump_scan_settings(s);
 
-	return SANE_STATUS_GOOD;
+	return SANE_STATUS_UNSUPPORTED;
+	//return SANE_STATUS_GOOD;
 chk_failed:
 	return SANE_STATUS_IO_ERROR;
 }

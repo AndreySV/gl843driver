@@ -1,6 +1,6 @@
 /* Device-specific functions
  *
- * Copyright (C) 2009 Andreas Robinson <andr345 at gmail dot com>
+ * Copyright (C) 2009-2010 Andreas Robinson <andr345 at gmail dot com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -49,12 +49,94 @@ int write_afe_gain(struct gl843_device *dev, int i, float g)
 	return write_afe(dev, 40 + i, afe_gain_to_val(g));
 }
 
-/* Set static (unchanging) hardware configuration */
-int setup_base(struct gl843_device *dev)
+/* Build an acceleration speed profile for the scanner's
+ * stepping motor.
+ *
+ * m:       Empty output object to fill with data.
+ * c_start: Inital clock ticks per motor step.
+ * c_end:   Final clock ticks per step. Must be less than c_start.
+ *          See "speed limits" below.
+ * exp:     Power function exponent. (Actually the inverse of the exponent,
+ *          see the implementation note below. Larger exp => slower acceleration.)
+ *          Canon uses 1.5 and 2.0.
+ *
+ * Speed limits for CanoScan 4400F:
+ *
+ * Smaller c => higher speed.
+ *
+ * full step:    Avoid. Does not work well at any speed.
+ * half-step:    c_min = 175 (up to 1200 dpi, platen scanning)
+ * quarter-step: c_min = 90 (1200 to 4800 dpi, film scanning)
+ * eighth-step:  c_min = 50 (Not used)
+ *
+ * c_max = 13000 (TODO: double check, number seems too low) for all step sizes.
+ *
+ * The motor will tend to stall if c < c_min (running too fast),
+ * and skip steps if c > c_max (running too slow).
+ *
+ * Implementation notes:
+ *
+ * The slope function is y[x] = (K/x)^(1/exp),
+ * where K = c_start ^ exp, x = [1 ... MTRTBL_SIZE-1]
+ * y[0] = c_start and y[x] >= c_end.
+ *
+ * The function generates close approximations, but not
+ * exact replicas of the speed profiles used in Canon's 
+ * CanoScan 4400F driver for Windows.
+ *
+ * Canon uses c_start = { 5617, 11234, 14298, 28597 or 24576 },
+ * and exp = 1.5 or 2.0. Specifically 
+ * (c_start, exp) = (24576, 1.5) for tables 1,2 and 3 (scanning, backtracking)
+ * and one of (28597, 1.5), (14298, 2.0), (11234, 2.0) or (5617, 2.0)
+ * for table 4 (fast moving).
+ */
+void build_accel_profile(struct motor_accel *m,
+			 uint16_t c_start,
+			 uint16_t c_end,
+			 float exp)
+{
+	double K;
+	int n;
+	unsigned int i;
+
+	K = pow(c_start, exp);
+	m->a[0] = c_start;
+	n = -1;
+	for (i = 1; i < MTRTBL_SIZE; i++) {
+		uint16_t c = pow(K / (double)i, 1/exp);
+		if (c <= c_end) {
+			m->a[i] = c_end;
+			if (n < 0)
+				n = i + 1;
+		} else {
+			m->a[i] = c;
+		}
+		printf("%d ", m->a[i]);
+	}
+	printf("\n");
+
+	if (n < 0) {
+		DBG(DBG_warn,
+			"Cannot fit the profile into MTRTBL_SIZE steps.\n"
+			"c_start = %d, desired c_end = %d, actual c_end = %d\n",
+			c_start, c_end, m->a[MTRTBL_SIZE-1]);
+		n = MTRTBL_SIZE;
+	}
+	/* The scanner restricts profile lengths to 1 << STEPTIM increments. */
+	m->alen = ALIGN(n, 1 << STEPTIM);
+
+	/* Get total acceleration time, used to determine Z1MOD and Z2MOD. */
+	m->t_max = 0;
+	for (i = 0; i < m->alen; i++)
+		m->t_max += m->a[i];
+}
+
+/* Set basic hardware configuration */
+int setup_static(struct gl843_device *dev)
 {
 	int ret;
 
-	write_reg(dev, GL843_LAMPPWR, 0);
+	CHK(write_reg(dev, GL843_LAMPPWR, 0));
 
 	struct regset_ent sdram[] = {
 
@@ -299,11 +381,11 @@ int setup_base(struct gl843_device *dev)
 	CHK(write_afe(dev, 2, 0x24));
 	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
 #if 0
-	/* Startup RGB offsets for Canoscan 4400F */
+	/* Startup RGB offsets */
 	CHK(write_afe(dev, 32, 96));
 	CHK(write_afe(dev, 33, 96));
 	CHK(write_afe(dev, 34, 96));
-	/* Startup RGB gains for Canoscan 4400F */
+	/* Startup RGB gains */
 	CHK(write_afe(dev, 40, 75));	/* 75 <=> g = 1.0 */
 	CHK(write_afe(dev, 41, 75));
 	CHK(write_afe(dev, 42, 75));
@@ -325,84 +407,21 @@ chk_failed:
 	return ret;
 }
 
-/* Build an acceleration speed profile for the scanner's
- * stepping motor.
- *
- * m:       Empty output object to fill with data.
- * c_start: Inital clock ticks per motor step.
- * c_end:   Final clock ticks per step. Must be less than c_start.
- *          See "speed limits" below.
- * exp:     Power function exponent. (Actually the inverse of the exponent,
- *          see the implementation note below. Larger exp => slower acceleration.)
- *          Canon uses 1.5 and 2.0.
- *
- * Speed limits for CanoScan 4400F:
- *
- * Smaller c => higher speed.
- *
- * full step:    Avoid. Does not work well at any speed.
- * half-step:    c_min = 175 (up to 1200 dpi, platen scanning)
- * quarter-step: c_min = 90 (1200 to 4800 dpi, film scanning)
- * eighth-step:  c_min = 50 (Not used)
- *
- * c_max = 13000 (TODO: double check, number seems too low) for all step sizes.
- *
- * The motor will tend to stall if c < c_min (running too fast),
- * and skip steps if c > c_max (running too slow).
- *
- * Implementation notes:
- *
- * The slope function is y[x] = (K/x)^(1/exp),
- * where K = c_start ^ exp, x = [1 ... MTRTBL_SIZE-1]
- * y[0] = c_start and y[x] >= c_end.
- *
- * The function generates close approximations, but not
- * exact replicas of the speed profiles used in Canon's 
- * CanoScan 4400F driver for Windows.
- *
- * Canon uses c_start = { 5617, 11234, 14298, 28597 or 24576 },
- * and exp = 1.5 or 2.0. Specifically 
- * (c_start, exp) = (24576, 1.5) for tables 1,2 and 3 (scanning, backtracking)
- * and one of (28597, 1.5), (14298, 2.0), (11234, 2.0) or (5617, 2.0)
- * for table 4 (fast moving).
- */
-void build_accel_profile(struct motor_accel *m,
-			 uint16_t c_start,
-			 uint16_t c_end,
-			 float exp)
+/* Horizontal/vertical common setup */
+int setup_common(struct gl843_device *dev, struct scan_setup *ss)
 {
-	double K;
-	int n;
-	unsigned int i;
+	if (ss->source == LAMP_PLATEN) {
+		ss->lperiod = 11640;
+		ss->linesel = (ss->dpi < 1200) ? 0 : 1;
+		ss->steptype = HALF_STEP;
 
-	K = pow(c_start, exp);
-	m->a[0] = c_start;
-	n = -1;
-	for (i = 1; i < MTRTBL_SIZE; i++) {
-		uint16_t c = pow(K / (double)i, 1/exp);
-		if (c <= c_end) {
-			m->a[i] = c_end;
-			if (n < 0)
-				n = i + 1;
-		} else {
-			m->a[i] = c;
-		}
+	} else { /* ss->source == LAMP_TA */
+		ss->lperiod = 88800;
+		ss->linesel = 0;
+		ss->steptype = (ss->dpi <= 1200) ? HALF_STEP : QUARTER_STEP;
 	}
 
-	if (n < 0) {
-		DBG(DBG_warn,
-			"Cannot fit the profile into MTRTBL_SIZE steps.\n"
-			"c_start = %d, desired c_end = %d, actual c_end = %d\n",
-			c_start, c_end, m->a[MTRTBL_SIZE-1]);
-		n = MTRTBL_SIZE;
-	}
-	/* The scanner restricts profile lengths to 1 << STEPTIM increments. */
-	m->alen = ALIGN(n, 1 << STEPTIM);
-
-	/* Get total acceleration time, used to determine Z1MOD and Z2MOD. */
-	m->t_max = 0;
-	for (i = 0; i < m->alen; i++)
-		m->t_max += m->a[i];
+	return 0;
 }
 
 /* Ref: gl843 datasheet, FMOVNO register
@@ -484,21 +503,77 @@ DECSEL:  Number of deceleration steps after touching home sensor.
 STEPSEL: Motor step type for tables 1, 2 and 3
 FSTPSEL: Motor step type for tables 4 and 5
 */
-
-int setup_motor(struct gl843_device *dev, struct scan_setup *ss)
+int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrate)
 {
 	int ret;
 
 	struct motor_accel move; /* for moving out and home */
 	struct motor_accel scan; /* for scanning and backtracking */
+	int c_move, c_scan; /* Move/scan speed [clock ticks per step] */
 
 	const int scanfeed = 1020;
-	int feedl, z1mod, z2mod, lperiod;
+	int feedl, z1mod, z2mod, n;
+	int lperiod = ss->lperiod;
+	int backtrack;
+	const int *vref;
 
-	lperiod = ss->lperiod << ss->tgtime;
+	/* { VRHOME, VRMOVE, VRBACK, VRSCAN }, from Windows driver */
+	const int   vr75dpi[4] = { 0, 0, 7, 0 };
+	const int  vr150dpi[4] = { 1, 0, 7, 1 };
+	const int  vr300dpi[4] = { 5, 0, 7, 5 };
+	const int  vr600dpi[4] = { 1, 0, 7, 1 };
+	const int vr1200dpi[4] = { 1, 0, 7, 4 };
+	const int   vr_film[4] = { 1, 0, 1, 4 };
 
-	build_accel_profile(&move, 28597, ss->c_move, 1.5);
-	build_accel_profile(&scan, 24576, ss->c_scan, 1.5);
+	/* Select motor vref */
+
+	if (ss->source == LAMP_PLATEN) {
+		if (ss->dpi <= 75) {
+			vref = vr75dpi;
+		} else if (ss->dpi <= 150) {
+			vref = vr150dpi;
+		} else if (ss->dpi <= 300) {
+			vref = vr300dpi;
+		} else if (ss->dpi <= 600) {
+			vref = vr600dpi;
+		} else { /* ss->dpi <= 1200 */
+			vref = vr1200dpi;
+		}
+	} else { /* ss->source == LAMP_TA */
+		vref = vr_film;
+	}
+
+	/* Select backtracking distance */
+
+	if (ss->use_backtracking) {
+		if (ss->dpi < 1200) {
+			backtrack = 200;
+		} else if (ss->dpi == 1200) {
+			backtrack = 100;
+		} else { /* ss->dpi > 1200 */
+			backtrack = 50;
+		}
+	} else {
+		backtrack = 0;
+	}
+
+	/* Set up feeding and scanning speeds and acceleration profiles */
+
+	c_move = (ss->steptype == HALF_STEP) ? 240 : 120;
+
+	/* The scan speed as a function of lperiod, linesel and steptype
+	 * determines the actual vertical resolution.
+	 * This implementation is derived from the Windows driver,
+	 * and is untested with resolutions other than 4800 / 2^n [dpi].
+	 */
+	c_scan = ss->lperiod * (1 << ss->linesel);
+	c_scan = (c_scan * ss->dpi) / (4800 * (1 << ss->steptype));
+	if (ss->dpi == 75) {
+		c_scan = ss->lperiod / 48; /* Quirk: Slow down 75 dpi */
+	}
+
+	build_accel_profile(&move, 28597, c_move, 1.5);
+	build_accel_profile(&scan, 24576, c_scan, 1.5);
 
 	struct regset_ent motor[] = {
 		{ GL843_STEPTIM, STEPTIM },
@@ -518,42 +593,30 @@ int setup_motor(struct gl843_device *dev, struct scan_setup *ss)
 		{ GL843_FSTPSEL, ss->steptype },
 		{ GL843_FMOVNO, move.alen >> STEPTIM },
 		{ GL843_FMOVDEC, move.alen >> STEPTIM },
-
-		/* TODO: Set up proper vref values.
-
-		This is the win-driver set:
-
-		platen settings, 75 - 1200 dpi:
-		  75 dpi: VRHOME = 0, VRMOVE = 0, VRBACK = 7, VRSCAN = 0
-		 150 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
-		 300 dpi: VRHOME = 5, VRMOVE = 0, VRBACK = 7, VRSCAN = 5
-		 600 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 1
-		1200 dpi: VRHOME = 1, VRMOVE = 0, VRBACK = 7, VRSCAN = 4
-
-		film settings, 1200 - 9600 dpi:
-			  VRHOME = 1, VRMOVE = 0, VRBACK = 1, VRSCAN = 4
-		*/
-
-		{ GL843_VRSCAN, 4 },
-		{ GL843_VRBACK, 7 },
-		{ GL843_VRMOVE, 5 },
-		{ GL843_VRHOME, 5 },
+		/* Vref */
+		{ GL843_VRHOME, vref[0] },
+		{ GL843_VRMOVE, vref[1] },
+		{ GL843_VRBACK, vref[2] },
+		{ GL843_VRSCAN, vref[3] },
 	};
 	CHK(write_regs(dev, motor, ARRAY_SIZE(motor)));
 
 	feedl = ss->start_y; /* Assume scanner head is at home */
 	feedl = feedl - (2*move.alen + scan.alen + scanfeed);
-	if (feedl > 0) {
+
+	if (feedl > 0 && !calibrate) {
 		/* Set up fast moving before scanning. */
 		set_reg(dev, GL843_FASTFED, 1);
 		set_reg(dev, GL843_SCANFED, scanfeed >> STEPTIM);
-		z2mod = (scan.t_max + scan.a[scan.alen - 1] * scanfeed) % lperiod;
+		n = scanfeed;
+
 		DBG(DBG_info, "   fast move: accel=%d + feed=%d + decel=%d\n",
 			move.alen, feedl, move.alen);
 		DBG(DBG_info, "+ scan start: accel=%d + feed=%d = %d steps\n",
 			scan.alen, scanfeed,
 			move.alen + feedl + move.alen + scan.alen + scanfeed);
-	} else {
+
+	} else if (feedl <= 0 && !calibrate) {
 		/* Don't use fast moving before scanning - not enough room. */
 		set_reg(dev, GL843_FASTFED, 0);
 		feedl = ss->start_y;
@@ -567,21 +630,28 @@ int setup_motor(struct gl843_device *dev, struct scan_setup *ss)
 				ss->height = 1;
 			feedl = 1;
 		}
+		n = feedl;
 
 		DBG(DBG_info, "scan start: accel=%d + feed=%d = %d steps\n",
 			scan.alen, feedl, scan.alen + feedl);
-		z2mod = (scan.t_max + scan.a[scan.alen - 1] * feedl) % lperiod;
+
+	} else { /* calibrate */
+		backtrack = 0;
+		feedl = 1;
+		n = feedl;
 	}
+
+	z2mod = (scan.t_max + scan.a[scan.alen - 1] * n) % lperiod;
 
 	set_reg(dev, GL843_FEEDL, feedl);
 	set_reg(dev, GL843_LINCNT, ss->height);
 	set_reg(dev, GL843_Z2MOD, z2mod);
 
-	if (ss->backtrack > 0) {
-		ss->backtrack = ALIGN(ss->backtrack, 1 << STEPTIM);
-		z1mod = (scan.t_max + scan.a[scan.alen - 1] * ss->backtrack) % lperiod;
-		set_reg(dev, GL843_FWDSTEP, ss->backtrack >> STEPTIM);
-		set_reg(dev, GL843_BWDSTEP, ss->backtrack >> STEPTIM);
+	if (backtrack > 0) {
+		backtrack = ALIGN(backtrack, 1 << STEPTIM);
+		z1mod = (scan.t_max + scan.a[scan.alen - 1] * backtrack) % lperiod;
+		set_reg(dev, GL843_FWDSTEP, backtrack >> STEPTIM);
+		set_reg(dev, GL843_BWDSTEP, backtrack >> STEPTIM);
 		set_reg(dev, GL843_Z1MOD, z1mod);
 		set_reg(dev, GL843_ACDCDIS, 0);
 	} else {
@@ -600,106 +670,37 @@ chk_failed:
 	return ret;
 }
 
-/* Move the scanner head without scanning.
- *
- * This function moves the scanner head to a calibration or
- * lamp warmup position, or back home once completed.
- *
- * d: moving distance in inches. > 0: forward, < 0: back
- *    WARNING: A bad value for d can crash the carriage into the wall.
- */
-int move_scanner_head(struct gl843_device *dev, float d)
-{
-	int ret;
-	int feedl;
-	struct motor_accel move;
-
-	feedl = (int)(4800 * d + 0.5);
-	if (feedl >= 0) {
-		set_reg(dev, GL843_MTRREV, 0);
-	} else {
-		set_reg(dev, GL843_MTRREV, 1);
-		feedl = -feedl;
-	}
-
-	build_accel_profile(&move, 24576, 240, 1.5);
-
-	/* Subtract acceleration and deceleration distances */
-	feedl = feedl - 2 * move.alen;
-	if (feedl < 0) {
-		/* The acceleration/deceleration curves are longer than
-		 * the distance we wish to move. Set feedl = 0 and trim
-		 * the curves to desired lengths. */
-		move.alen = (feedl + 2 * move.alen) / 2;
-		feedl = 0;
-	}
-
-	struct regset_ent motor1[] = {
-		/* Misc */
-		{ GL843_STEPTIM, STEPTIM },
-		{ GL843_MULSTOP, 0 },
-		{ GL843_STOPTIM, 0 },
-		{ GL843_DECSEL, 1 },
-		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
-		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
-		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
-		/* Scanning (table 1 and 3)*/
-		{ GL843_STEPSEL, HALF_STEP },
-		{ GL843_STEPNO, 1 },
-		{ GL843_FSHDEC, 1 },
-		/* Backtracking (table 2) */
-		{ GL843_FASTNO, 1 },
-		{ GL843_ACDCDIS, 1 }, /* Disable backtracking. */
-		/* Fast feeding  */
-		{ GL843_FSTPSEL, HALF_STEP },
-		{ GL843_FMOVNO, move.alen >> STEPTIM },
-		{ GL843_FMOVDEC, move.alen >> STEPTIM },
-		{ GL843_DECSEL, 1 },
-		{ GL843_FASTFED, 1 },
-		{ GL843_SCANFED, 0 },
-		{ GL843_FEEDL, feedl },
-		{ GL843_LINCNT, 0 },
-		{ GL843_Z1MOD, 0 },
-		{ GL843_Z2MOD, 0 },
-
-		{ GL843_VRSCAN, 3 },
-		{ GL843_VRBACK, 3 },
-		{ GL843_VRMOVE, 5 },
-		{ GL843_VRHOME, 5 },
-	};
-	CHK(write_regs(dev, motor1, ARRAY_SIZE(motor1)));
-
-	CHK(send_motor_accel(dev, 1, move.a, 1020));
-	CHK(send_motor_accel(dev, 2, move.a, 1020));
-	CHK(send_motor_accel(dev, 3, move.a, 1020));
-	CHK(send_motor_accel(dev, 4, move.a, 1020));
-
-	CHK(write_reg(dev, GL843_MTRPWR, 1));
-	CHK(write_reg(dev, GL843_SCAN, 0));
-	CHK(write_reg(dev, GL843_MOVE, 16));
-
-	ret = 0;
-chk_failed:
-	return ret;
-}
-
-int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
+int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 {
 	int ret;
 
+	int afe_dpi;
 	int tgw, tgshld;
 	int ck1map, ck3map, ck4map;
 	int cph, cpl, rsh, rsl;
 	int ck1mtgl, ck3mtgl;
 	int vsmp;
 	int rhi, rlow, ghi, glow, bhi, blow;
+	int expr, expg, expb;
 	int strpixel, endpixel, maxwd, scanmod;
 	int deep_color, mono, use_gamma;
+	int lperiod, tgtime;
+	int bwhi, bwlo;
 
-	/* afe_dpi = resolution "seen" by the A/D converter,
+	expr = 40000;
+	expg = 40000;
+	expb = 40000;
+
+	/* afe_dpi = resolution used in the A/D converter (AFE),
 	   1:1, 1:2, 1:4 of the CCD resolution */
 
-	if (ss->afe_dpi == 1200) {
+	if (ss->source == LAMP_PLATEN) {
+		afe_dpi = 1200;
+	} else { /* ss->source == LAMP_TA */
+		afe_dpi = (int) ceil(ss->dpi / 1200) * 1200;
+	}
+
+	if (afe_dpi == 1200) {
 
 		tgw = 10;
 		tgshld = 11;
@@ -711,7 +712,11 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		ck1mtgl = 0;
 		ck3mtgl = 0;
 
-		cph = 1; cpl = 3;
+		if (ss->source == LAMP_PLATEN) {
+			cph = 1; cpl = 3;
+		} else {
+			cph = 0; cpl = 0;
+		}
 		rsh = 0; rsl = 2;
 
 		vsmp = 11;
@@ -719,7 +724,7 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		ghi = 0; glow = 3;
 		bhi = 6; blow = 8;
 
-	} else if (ss->afe_dpi == 2400) {
+	} else if (afe_dpi == 2400) {
 
 		tgw = 21;
 		tgshld = 21;
@@ -736,7 +741,7 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		vsmp = 10;
 		rhi = 11; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 9;
 
-	} else if (ss->afe_dpi == 4800) {
+	} else if (afe_dpi == 4800) {
 
 		tgw = 21;
 		tgshld = 21;
@@ -753,13 +758,9 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		vsmp = 3;
 		rhi = 2; rlow = 5; ghi = 8; glow = 11; bhi = 13; blow = 15;
 	} else {
-		DBG(DBG_error0, "BUG: Unhandled afe_dpi %d\n", ss->afe_dpi);
+		DBG(DBG_error0, "BUG: Unhandled afe_dpi %d\n", afe_dpi);
 		return -1;
 	}
-
-	strpixel = tgw * 32 + 2 * tgshld * 32 + ss->start_x;
-	endpixel = strpixel + ss->width;
-	DBG(DBG_info, "strpixel = %d, endpixel = %d\n", strpixel, endpixel);
 
 	switch (ss->fmt) {
 	case PXFMT_LINEART:	/* 1 bit per pixel, black and white */
@@ -792,12 +793,28 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		return -1;
 	}
 
+	strpixel = tgw * 32 + 2 * tgshld * 32 + ss->start_x;
+	endpixel = strpixel + ss->width;
+
 	deep_color = (ss->fmt == PXFMT_GRAY16 || ss->fmt == PXFMT_RGB16);
 	use_gamma = (ss->fmt != PXFMT_GRAY16 && ss->fmt != PXFMT_RGB16);
 
+	bwhi = (int) satf(ss->bwthr + (ss->bwhys / 2) + 0.5, 0, 255);
+	bwlo = (int) satf(ss->bwthr - (ss->bwhys / 2) + 0.5, 0, 255);
+
+	tgtime = 0;
+	lperiod = ss->lperiod;
+	while (lperiod > 65535) {
+		lperiod = lperiod / 2;
+		tgtime++;
+	}
+
+	DBG(DBG_info, "strpixel = %d, endpixel = %d\n", strpixel, endpixel);
+	DBG(DBG_info, "lperiod = %d, tgtime = %d\n", lperiod, tgtime);
 	DBG(DBG_info, "maxwd = %d, monochrome = %d, deep_color = %d, "
 		"use_gamma = %d, dpi = %d\n", maxwd, mono, deep_color,
 		use_gamma, ss->dpi);
+	DBG(DBG_info, "bwhi = %d, bwlo = %d\n", bwhi, bwlo);
 
 	/* CCD and AFE settings */
 	struct regset_ent frontend[] = {
@@ -809,9 +826,9 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 						/* 7 = 16 clks/px (48bit) */
 		/* 0x10,0x11,0x12,0x13,0x14,0x15
 		 * RGB exposure times */
-		{ GL843_EXPR, ss->expr },
-		{ GL843_EXPG, ss->expg },
-		{ GL843_EXPB, ss->expb },
+		{ GL843_EXPR, expr },
+		{ GL843_EXPG, expg },
+		{ GL843_EXPB, expb },
 		/* 0x17 */
 		{ GL843_TGMODE, 0 },
 		{ GL843_TGW, tgw },	/* CCD TG plus width = 10 or 21 */
@@ -821,7 +838,7 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		{ GL843_CK4MTGL, 0 },
 		{ GL843_CK3MTGL, ck3mtgl },
 		{ GL843_CK1MTGL, ck1mtgl },
-		{ GL843_TGTIME, ss->tgtime },
+		{ GL843_TGTIME, tgtime },
 		/* 0x1D */
 		{ GL843_TGSHLD, tgshld },	/* 11 or 21 */
 		/* 0x9E */
@@ -830,7 +847,7 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		/* 0x1E */
 		{ GL843_LINESEL, ss->linesel },
 		/* 0x38,0x39 */
-		{ GL843_LPERIOD, ss->lperiod },
+		{ GL843_LPERIOD, lperiod },
 		/* 0x52,0x53,0x54,0x55,0x56,0x57,0x58
 		 * These depend on AFE clocks/pixel */
 		{ GL843_RHI, rhi },
@@ -850,10 +867,7 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		{ GL843_CK1MAP, ck1map },
 		{ GL843_CK3MAP, ck3map },
 		{ GL843_CK4MAP, ck4map },
-	};
-	CHK(write_regs(dev, frontend, ARRAY_SIZE(frontend)));
 
-	struct regset_ent format[] = {
 		/* 0x2C,0x2D,0x30,0x31,0x32,0x33 */
 		{ GL843_DPISET, ss->dpi },
 		{ GL843_STRPIXEL, strpixel },
@@ -865,12 +879,12 @@ int setup_frontend(struct gl843_device *dev, struct scan_setup *ss)
 		/* 0x04 */
 		{ GL843_LINEART, ss->fmt == PXFMT_LINEART },
 		/* 0x2E,0x2F */
-		{ GL843_BWHI, ss->bwhi },
-		{ GL843_BWLOW, ss->bwlo },
+		{ GL843_BWHI, bwhi },
+		{ GL843_BWLOW, bwlo },
 		/* 0x05 */
 		{ GL843_GMMENB, use_gamma },
 	};
-	CHK(write_regs(dev, format, ARRAY_SIZE(format)));
+	CHK(write_regs(dev, frontend, ARRAY_SIZE(frontend)));
 
 	ret = 0;
 chk_failed:
@@ -921,6 +935,92 @@ int set_lamp(struct gl843_device *dev, enum gl843_lamp state, int timeout)
 		{ GL843_LAMPTIM, timeout },
 	};
 	CHK(write_regs(dev, lamp2, ARRAY_SIZE(lamp2)));
+
+	ret = 0;
+chk_failed:
+	return ret;
+}
+
+/* Move the scanner head without scanning.
+ *
+ * This function moves the scanner head to a calibration or
+ * lamp warmup position, or back home once completed.
+ *
+ * d: moving distance in millimeters. > 0: forward, < 0: back
+ *    WARNING: A bad value for d can crash the carriage into the wall.
+ */
+int move_scanner_head(struct gl843_device *dev, float d)
+{
+	int ret;
+	int feedl;
+	struct motor_accel move;
+
+	/* Get direction and distance to move in steps. */
+
+	feedl = (int)(4800 * d / 25.4 + 0.5);
+	if (feedl >= 0) {
+		set_reg(dev, GL843_MTRREV, 0);
+	} else {
+		set_reg(dev, GL843_MTRREV, 1);
+		feedl = -feedl;
+	}
+
+	build_accel_profile(&move, 5600, 200, 2.0);
+
+	feedl = feedl - 2 * move.alen;
+	if (feedl < 0) {
+		/* The acceleration/deceleration curves are longer than
+		 * the distance we wish to move. Set feedl = 1 (minimum)
+		 * and trim the curves to desired lengths. */
+		move.alen = (feedl + 2 * move.alen) / 2;
+		feedl = 1;
+	}
+
+	struct regset_ent motor1[] = {
+		/* Misc */
+		{ GL843_STEPTIM, STEPTIM },
+		{ GL843_MULSTOP, 0 },
+		{ GL843_STOPTIM, 0 },
+		{ GL843_DECSEL, 1 },
+		{ GL843_LONGCURV, 0 }, /* don't use table 5 */
+		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
+		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
+		/* Scanning (table 1 and 3)*/
+		{ GL843_STEPSEL, HALF_STEP },
+		{ GL843_STEPNO, 1 },
+		{ GL843_FSHDEC, 1 },
+		/* Backtracking (table 2) */
+		{ GL843_FASTNO, 1 },
+		{ GL843_ACDCDIS, 1 }, /* Disable backtracking. */
+		/* Fast feeding  */
+		{ GL843_FSTPSEL, HALF_STEP },
+		{ GL843_FMOVNO, move.alen >> STEPTIM },
+		{ GL843_FMOVDEC, move.alen >> STEPTIM },
+		{ GL843_DECSEL, 1 },
+		{ GL843_FASTFED, 1 },
+		{ GL843_SCANFED, 0 },
+		{ GL843_FEEDL, feedl },
+		{ GL843_LINCNT, 0 },
+		{ GL843_Z1MOD, 0 },
+		{ GL843_Z2MOD, 0 },
+
+		{ GL843_VRHOME, 5 },
+		{ GL843_VRMOVE, 5 },
+		{ GL843_VRBACK, 1 },
+		{ GL843_VRSCAN, 4 },
+	};
+	CHK(write_regs(dev, motor1, ARRAY_SIZE(motor1)));
+
+	CHK(send_motor_accel(dev, 1, move.a, 1020));
+	CHK(send_motor_accel(dev, 2, move.a, 1020));
+	CHK(send_motor_accel(dev, 3, move.a, 1020));
+	CHK(send_motor_accel(dev, 4, move.a, 1020));
+
+	/* Start moving */
+
+	CHK(write_reg(dev, GL843_MTRPWR, 1));
+	CHK(write_reg(dev, GL843_SCAN, 0));
+	CHK(write_reg(dev, GL843_MOVE, 16));
 
 	ret = 0;
 chk_failed:
