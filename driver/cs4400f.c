@@ -111,9 +111,7 @@ void build_accel_profile(struct motor_accel *m,
 		} else {
 			m->a[i] = c;
 		}
-		printf("%d ", m->a[i]);
 	}
-	printf("\n");
 
 	if (n < 0) {
 		DBG(DBG_warn,
@@ -135,6 +133,7 @@ void build_accel_profile(struct motor_accel *m,
 int setup_static(struct gl843_device *dev)
 {
 	int ret;
+	int i;
 
 	CHK(write_reg(dev, GL843_LAMPPWR, 0));
 
@@ -380,24 +379,12 @@ int setup_static(struct gl843_device *dev)
 	CHK(write_afe(dev, 1, 0x23));
 	CHK(write_afe(dev, 2, 0x24));
 	CHK(write_afe(dev, 3, 0x2f)); /* Can be 0x1f or 0x2f */
-#if 0
-	/* Startup RGB offsets */
-	CHK(write_afe(dev, 32, 96));
-	CHK(write_afe(dev, 33, 96));
-	CHK(write_afe(dev, 34, 96));
-	/* Startup RGB gains */
-	CHK(write_afe(dev, 40, 75));	/* 75 <=> g = 1.0 */
-	CHK(write_afe(dev, 41, 75));
-	CHK(write_afe(dev, 42, 75));
-#endif
-	CHK(write_afe(dev, 32, 112));
-	CHK(write_afe(dev, 33, 112));
-	CHK(write_afe(dev, 34, 112));
-	CHK(write_afe(dev, 40, 216));
-	CHK(write_afe(dev, 41, 216));
-	CHK(write_afe(dev, 42, 216));
 
-	set_lamp(dev, LAMP_OFF, 0);
+	for (i = 0; i < 3; i++) {
+		CHK(write_afe(dev, 32 + i, 112)); /* Startup RGB offset */ // 96
+		CHK(write_afe(dev, 41 + i, 216)); /* Startup RGB gain */   // 75
+	}
+
 	CHK(flush_regs(dev));
 
 	set_reg(dev, GL843_PWRBIT, 1);	/* 0x06 */
@@ -414,13 +401,19 @@ int setup_common(struct gl843_device *dev, struct scan_setup *ss)
 		ss->lperiod = 11640;
 		ss->linesel = (ss->dpi < 1200) ? 0 : 1;
 		ss->steptype = HALF_STEP;
+		ss->step_dpi = 4800;
 
 	} else { /* ss->source == LAMP_TA */
 		ss->lperiod = 88800;
 		ss->linesel = 0;
-		ss->steptype = (ss->dpi <= 1200) ? HALF_STEP : QUARTER_STEP;
+		if (ss->dpi <= 1200) {
+			ss->steptype = HALF_STEP;
+			ss->step_dpi = 4800;
+		} else {
+			ss->steptype = QUARTER_STEP;
+			ss->step_dpi = 9600;
+		}
 	}
-
 	return 0;
 }
 
@@ -512,6 +505,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	int c_move, c_scan; /* Move/scan speed [clock ticks per step] */
 
 	const int scanfeed = 1020;
+	int start_y;
 	int feedl, z1mod, z2mod, n;
 	int lperiod = ss->lperiod;
 	int backtrack;
@@ -525,7 +519,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	const int vr1200dpi[4] = { 1, 0, 7, 4 };
 	const int   vr_film[4] = { 1, 0, 1, 4 };
 
-	/* Select motor vref */
+	/* Select motor vref (presumably depends on the speed/step type) */
 
 	if (ss->source == LAMP_PLATEN) {
 		if (ss->dpi <= 75) {
@@ -557,6 +551,8 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 		backtrack = 0;
 	}
 
+	start_y = ss->start_y * ss->step_dpi / ss->dpi;
+
 	/* Set up feeding and scanning speeds and acceleration profiles */
 
 	c_move = (ss->steptype == HALF_STEP) ? 240 : 120;
@@ -567,13 +563,17 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	 * and is untested with resolutions other than 4800 / 2^n [dpi].
 	 */
 	c_scan = ss->lperiod * (1 << ss->linesel);
-	c_scan = (c_scan * ss->dpi) / (4800 * (1 << ss->steptype));
+	c_scan = c_scan * ss->dpi / ss->step_dpi;
 	if (ss->dpi == 75) {
 		c_scan = ss->lperiod / 48; /* Quirk: Slow down 75 dpi */
 	}
 
-	build_accel_profile(&move, 28597, c_move, 1.5);
-	build_accel_profile(&scan, 24576, c_scan, 1.5);
+	DBG(DBG_info, "c_move = %d, c_scan = %d\n", c_move, c_scan);
+	DBG(DBG_info, "dpi = %d, lperiod = %d, linesel = %d, steptype = %d\n",
+		 ss->dpi, ss->lperiod, ss->linesel, ss->steptype);
+
+	build_accel_profile(&move, 12000, c_move, 1.5);
+	build_accel_profile(&scan, 12000, c_scan, 1.5);
 
 	struct regset_ent motor[] = {
 		{ GL843_STEPTIM, STEPTIM },
@@ -601,7 +601,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	};
 	CHK(write_regs(dev, motor, ARRAY_SIZE(motor)));
 
-	feedl = ss->start_y; /* Assume scanner head is at home */
+	feedl = start_y; /* Assume scanner head is at home */
 	feedl = feedl - (2*move.alen + scan.alen + scanfeed);
 
 	if (feedl > 0 && !calibrate) {
@@ -619,7 +619,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	} else if (feedl <= 0 && !calibrate) {
 		/* Don't use fast moving before scanning - not enough room. */
 		set_reg(dev, GL843_FASTFED, 0);
-		feedl = ss->start_y;
+		feedl = start_y;
 		feedl -= scan.alen;
 		if (feedl < 1) {
 			DBG(DBG_warn, "Cannot start scan early enough.\n");
@@ -682,10 +682,12 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 	int vsmp;
 	int rhi, rlow, ghi, glow, bhi, blow;
 	int expr, expg, expb;
+	int width, start_x;
 	int strpixel, endpixel, maxwd, scanmod;
 	int deep_color, mono, use_gamma;
 	int lperiod, tgtime;
 	int bwhi, bwlo;
+	int dpi;
 
 	expr = 40000;
 	expg = 40000;
@@ -701,6 +703,8 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 	}
 
 	if (afe_dpi == 1200) {
+
+		dpi = ss->dpi * 4;
 
 		tgw = 10;
 		tgshld = 11;
@@ -726,6 +730,8 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 
 	} else if (afe_dpi == 2400) {
 
+		dpi = 4800;
+
 		tgw = 21;
 		tgshld = 21;
 
@@ -742,6 +748,8 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 		rhi = 11; rlow = 13; ghi = 0; glow = 3; bhi = 6; blow = 9;
 
 	} else if (afe_dpi == 4800) {
+
+		dpi = 4800;
 
 		tgw = 21;
 		tgshld = 21;
@@ -761,6 +769,11 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 		DBG(DBG_error0, "BUG: Unhandled afe_dpi %d\n", afe_dpi);
 		return -1;
 	}
+
+	width = ss->width * afe_dpi / ss->dpi;
+	start_x = ss->start_x * afe_dpi / ss->dpi;
+	strpixel = tgw * 32 + 2 * tgshld * 32 + start_x;
+	endpixel = strpixel + width;
 
 	switch (ss->fmt) {
 	case PXFMT_LINEART:	/* 1 bit per pixel, black and white */
@@ -784,7 +797,7 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 		mono = 0;
 		break;
 	case PXFMT_RGB16:	/* 48 bits per pixel, RGB color */
-		maxwd = ss->width;
+		maxwd = width;
 		scanmod = 7;
 		mono = 0;
 		break;
@@ -792,9 +805,6 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 		DBG(DBG_error0, "BUG: Undefined pixel format\n");
 		return -1;
 	}
-
-	strpixel = tgw * 32 + 2 * tgshld * 32 + ss->start_x;
-	endpixel = strpixel + ss->width;
 
 	deep_color = (ss->fmt == PXFMT_GRAY16 || ss->fmt == PXFMT_RGB16);
 	use_gamma = (ss->fmt != PXFMT_GRAY16 && ss->fmt != PXFMT_RGB16);
@@ -869,7 +879,7 @@ int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss)
 		{ GL843_CK4MAP, ck4map },
 
 		/* 0x2C,0x2D,0x30,0x31,0x32,0x33 */
-		{ GL843_DPISET, ss->dpi },
+		{ GL843_DPISET, dpi },
 		{ GL843_STRPIXEL, strpixel },
 		{ GL843_ENDPIXEL, endpixel },
 		/* 0x34,0x35,0x36,0x37 */

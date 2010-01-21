@@ -527,6 +527,47 @@ chk_mem_failed:
 	return cal;
 }
 
+int foo_scan(struct gl843_device *dev)
+{
+	int ret;
+	struct scan_setup ss = {};
+	struct gl843_image *img = NULL;
+
+	CHK(write_reg(dev, GL843_SCANRESET, 1));
+	while(!read_reg(dev, GL843_HOMESNR))
+		usleep(10000);
+
+	CHK(setup_static(dev));
+	ss.source = LAMP_PLATEN;
+	ss.fmt = PXFMT_RGB16;
+	ss.dpi = 80;
+	ss.start_x = 128/15;
+	ss.width = 10208/15;
+	ss.start_y = 600/15;
+	ss.height = 1200/15;
+	ss.use_backtracking = 1;
+
+	CHK_MEM(img = create_image(ss.width, ss.height, ss.fmt));
+
+	CHK(setup_common(dev, &ss));
+	CHK(setup_horizontal(dev, &ss));
+	CHK(setup_vertical(dev, &ss, 0));
+	CHK(set_lamp(dev, ss.source, 10));
+	CHK(write_reg(dev, GL843_MTRPWR, 1));
+	CHK(scan_img(dev, img, 10000));
+
+	write_pnm_image("test.pnm", img);
+
+	while (!read_reg(dev, GL843_HOMESNR))
+		usleep(10000);
+	CHK(write_reg(dev, GL843_MTRPWR, 0));
+
+chk_mem_failed:
+chk_failed:
+	free(img);
+	return ret;
+}
+
 int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 {
 	int ret;

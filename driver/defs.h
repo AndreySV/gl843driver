@@ -79,6 +79,7 @@ struct scan_setup {
 	/* Hardware-specific parameters */
 
 	enum motor_steptype steptype;
+	int step_dpi;
 	int lperiod;
 	int linesel;
 };

@@ -59,11 +59,11 @@ const SANE_Int cs4400f_modes[] = { 2, SANE_FRAME_GRAY, SANE_FRAME_RGB };
 const SANE_String_Const cs4400f_mode_names[] = {
 	SANE_VALUE_SCAN_MODE_GRAY, SANE_VALUE_SCAN_MODE_COLOR, NULL };
 const SANE_Int cs4400f_bit_depths[]  = { 2, 8, 16 };
-const SANE_Int cs4400f_resolutions[] = { 5, 75, 150, 300, 600, 1200 };
-const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(220.0), 0 };
+const SANE_Int cs4400f_resolutions[] = { 8, 80, 100, 150, 200, 300, 400, 600, 1200 };
+const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(216.0), 0 };
 const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(300.0), 0 };
-const SANE_Fixed cs4400f_x_start     = SANE_FIX(0.0);  /* Platen left edge */
-const SANE_Fixed cs4400f_y_start     = SANE_FIX(10.0); /* Platen top edge */
+const SANE_Fixed cs4400f_x_start     = SANE_FIX(2.7);  /* Platen left edge */
+const SANE_Fixed cs4400f_y_start     = SANE_FIX(12.7); /* Platen top edge */
 const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(7.0);
 const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(24.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(226.0), 0 };
@@ -704,7 +704,7 @@ void sane_close(SANE_Handle handle)
 {
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	if (s) {
-		reset_scanner(s->hw);
+//		reset_scanner(s->hw);
 		destroy_scanner(s);
 	}
 }
@@ -939,7 +939,8 @@ SANE_Status sane_get_parameters(SANE_Handle handle, SANE_Parameters *params)
 
 	params->format = s->mode;
 	params->last_frame = SANE_TRUE;
-	params->pixels_per_line = mm_to_px(s->tl_x, s->br_x, s->dpi, NULL);
+	params->pixels_per_line = mm_to_px(s->tl_x, s->br_x, s->dpi, NULL)
+		& ~1; /* Must be even. (CS4400F hardware requirement) */
 	params->bytes_per_line = (params->pixels_per_line * s->depth + 7) / 8;
 	if (s->mode == SANE_FRAME_RGB)
 		params->bytes_per_line *=  3;
@@ -993,7 +994,7 @@ SANE_Status sane_start(SANE_Handle handle)
 
 	CHK(setup_static(s->hw));
 	CHK(reset_and_move_home(s->hw));
-
+/*
 	CHK(move_scanner_head(s->hw, 7));
 	while (read_reg(s->hw, GL843_MOTORENB))
 		usleep(10000);
@@ -1001,16 +1002,17 @@ SANE_Status sane_start(SANE_Handle handle)
 	CHK(move_scanner_head(s->hw, -7));
 	while (read_reg(s->hw, GL843_MOTORENB))
 		usleep(10000);
+*/
 
-	CHK(reset_and_move_home(s->hw));
+	foo_scan(s->hw);
+
+//	CHK(reset_and_move_home(s->hw));
 
 //	CHK(setup_common(s->hw, &ss));
 //	CHK(setup_horizontal(s->hw, &ss));
 //	CHK(setup_vertical(s->hw, &ss, 1));
 
 //	CHK(select_shading(s->hw, SHADING_CORR_OFF));
-
-	dump_scan_settings(s);
 
 	return SANE_STATUS_UNSUPPORTED;
 	//return SANE_STATUS_GOOD;
@@ -1031,7 +1033,7 @@ void sane_cancel(SANE_Handle handle)
 {
 	int ret;
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
-	CHK(reset_and_move_home(s->hw));
+//	CHK(reset_and_move_home(s->hw));
 chk_failed:
 	return;
 }
