@@ -54,6 +54,8 @@ int setup_motor(struct gl843_device *dev, struct scan_setup *ss);
 int do_warmup_scan(struct gl843_device *dev, float y_pos);
 int reset_scanner(struct gl843_device *dev);
 int reset_and_move_home(struct gl843_device *dev);
+int warm_up_scanner(struct gl843_device *dev, enum gl843_lamp source,
+	int lamp_timeout, float cal_y_pos);
 
 
 #endif /* _SCAN_H_ */

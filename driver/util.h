@@ -27,6 +27,35 @@
 /* Make v evenly divisible by 2^STEPTIM by rounding down */
 #define STEPTIM_ALIGN_DN(v) ALIGN_DN((v), 1 << STEPTIM)
 
+#ifdef CHK_DEBUG
+
+#define CHK(x)						\
+	do {						\
+		DBG_LN(DBG_chk, "CHK(%s)\n", #x);	\
+		ret = (x);				\
+		if (ret < 0)				\
+			goto chk_failed;		\
+	} while (0)
+
+#define CHK_SANE(x)					\
+	do {						\
+		DBG_LN(DBG_chk, "CHK_SANE(%s)\n", #x);	\
+		ret = (x);				\
+		if (ret != SANE_STATUS_GOOD)		\
+			goto chk_sane_failed;		\
+	} while (0)
+
+#define CHK_MEM(x)					\
+	do {						\
+		void *p;				\
+		DBG_LN(DBG_chk, "CHK_MEM(%s)\n", #x);	\
+		p = (void*)(x);				\
+		if (p == NULL)				\
+			goto chk_mem_failed;		\
+	} while (0)
+
+#else
+
 #define CHK(x)					\
 	do {					\
 		ret = (x);			\
@@ -49,14 +78,16 @@
 			goto chk_mem_failed;	\
 	} while (0)
 
+#endif /* CHK_DEBUG */
+
 #define DBG_error0	0	/* unfilterable messages */
 #define DBG_error	1	/* fatal errors */
 #define DBG_msg		2	/* scanner workflow messages */
 #define DBG_warn	3	/* warnings and non-fatal errors */
-#define DBG_info	4	/* informational messages */
-#define DBG_io		8	/* io functions */
-#define DBG_io2		9	/* io functions that are called very often */
-#define DBG_data	10	/* log image data */
+#define DBG_info	4	/* informational messages, e.g scan parameters */
+#define DBG_chk		5	/* CHK() calls */
+#define DBG_io		8	/* device-register I/O functions */
+#define DBG_io2		9	/* I/O-register I/O */
 
 #define DBG(level, msg, ...)	\
 	vprintf_dbg(level, __func__, 0, msg, ##__VA_ARGS__)

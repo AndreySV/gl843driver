@@ -63,8 +63,8 @@ const SANE_Int cs4400f_resolutions[] = { 8, 80, 100, 150, 200, 300, 400, 600, 12
 const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(216.0), 0 };
 const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(300.0), 0 };
 const SANE_Fixed cs4400f_x_start     = SANE_FIX(2.7);  /* Platen left edge */
-const SANE_Fixed cs4400f_y_start     = SANE_FIX(12.7); /* Platen top edge */
-const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(7.0);
+const SANE_Fixed cs4400f_y_start     = SANE_FIX(12.0); /* Platen top edge */
+const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
 const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(24.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(226.0), 0 };
 const SANE_Fixed cs4400f_x_start_ta  = SANE_FIX(97.0);  /* TA left edge */
@@ -649,6 +649,9 @@ static SANE_Status create_scanner(libusb_device *usbdev, CS4400F_Scanner **scann
 	CHK_MEM(s = create_CS4400F());
 	CHK_MEM(s->hw = create_gl843dev(h));
 	CHK(setup_static(s->hw));
+	/* Begin warming up the lamp before the user configures the scan.
+	 * This can save time later. */
+	CHK(set_lamp(s->hw, s->source, s->lamp_timeout));
 
 	*scanner = s;
 	return SANE_STATUS_GOOD;
@@ -693,6 +696,7 @@ SANE_Status sane_open(SANE_String_Const devicename,
 	}
 
 	CHK_SANE(create_scanner(dev->usbdev, &s));
+
 	*handle = s;
 	return SANE_STATUS_GOOD;
 
@@ -966,6 +970,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	SANE_Parameters p;
 	struct scan_setup ss = {};
+	float cal_y_pos;
 
 	sane_get_parameters(s, &p);
 
@@ -988,23 +993,42 @@ SANE_Status sane_start(SANE_Handle handle)
 
 	ss.use_backtracking = 0; /* TODO: Make user controllable */
 
+	if (s->source == LAMP_PLATEN) {
+		cal_y_pos = SANE_UNFIX(s->y_calpos);
+	} else {
+		cal_y_pos = SANE_UNFIX(s->y_calpos_ta);
+	}
+
+	/* Ensure the head is home. */
+
+	CHK(reset_scanner(s->hw));
+	CHK(set_lamp(s->hw, s->source, s->lamp_timeout));
+	while(!read_reg(s->hw, GL843_HOMESNR))
+		usleep(10000);
+
+	/* Warm up */
+
+	DBG(DBG_msg, "Warming up scanner ...\n");
+
+	if (s->need_warmup) {
+		CHK(warm_up_scanner(s->hw, s->source, s->lamp_timeout, cal_y_pos));
+		s->need_warmup = SANE_FALSE;
+	}
+
+	DBG(DBG_msg, "Warming up scanner ... done\n");
+
+	/* TODO: Set up shading correction */
+
+	if (s->need_shading) {
+
+		s->need_shading = SANE_FALSE;
+	}
+
+	/* TODO: Set up shading correction for current resolution and width */
+
 	/* TODO: Gamma correction */
-	/* TODO: Warmup */
-	/* TODO: Shading correction setup */
 
-	CHK(setup_static(s->hw));
-	CHK(reset_and_move_home(s->hw));
-/*
-	CHK(move_scanner_head(s->hw, 7));
-	while (read_reg(s->hw, GL843_MOTORENB))
-		usleep(10000);
-
-	CHK(move_scanner_head(s->hw, -7));
-	while (read_reg(s->hw, GL843_MOTORENB))
-		usleep(10000);
-*/
-
-	foo_scan(s->hw);
+//	test_scan(s->hw);
 
 //	CHK(reset_and_move_home(s->hw));
 
@@ -1033,7 +1057,8 @@ void sane_cancel(SANE_Handle handle)
 {
 	int ret;
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
-//	CHK(reset_and_move_home(s->hw));
+	CHK(reset_scanner(s->hw));
+	CHK(set_lamp(s->hw, s->source, s->lamp_timeout));
 chk_failed:
 	return;
 }

@@ -20,7 +20,10 @@
 #include <unistd.h>
 #include <libusb-1.0/libusb.h>
 #include <sane/sane.h>
+
 #define GL843_PRIVATE
+#undef CHK_DEBUG
+
 #include "low.h"
 #include "util.h"
 

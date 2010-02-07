@@ -19,6 +19,9 @@
 #include <math.h>
 #include <string.h>
 #include <sane/sane.h>
+
+#define CHK_DEBUG
+
 #include "low.h"
 #include "cs4400f.h"
 #include "util.h"
@@ -95,6 +98,38 @@ void write_pnm_image(const char *filename, struct gl843_image *img)
 	}
 }
 
+/* Wait until the scanner head is in the home position */
+static int wait_until_home(struct gl843_device *dev)
+{
+	int ret = 0;
+	while (ret == 0) {
+		ret = read_reg(dev, GL843_HOMESNR);
+		usleep(10000);
+	}
+	return ret;
+}
+
+/* Wait until the scanner motor is turned off */
+static int wait_motor(struct gl843_device *dev)
+{
+	int ret = 1;
+	while (ret > 0) {
+		ret = read_reg(dev, GL843_MOTORENB);
+		usleep(10000);
+	}
+	return ret;
+}
+
+static int wait_for_pixels(struct gl843_device *dev)
+{
+	int ret = 1;
+	while (ret > 0) {
+		ret = read_reg(dev, GL843_BUFEMPTY);
+		usleep(1000);
+	}
+	return ret;
+}
+
 static int scan_img(struct gl843_device *dev,
 		    struct gl843_image *img,
 		    int timeout)
@@ -106,7 +141,7 @@ static int scan_img(struct gl843_device *dev,
 	CHK(write_reg(dev, GL843_SCAN, 1));
 	CHK(write_reg(dev, GL843_MOVE, 255));
 
-	while (read_reg(dev, GL843_BUFEMPTY));
+	CHK(wait_for_pixels(dev));
 
 	buf = img->data;
 	for (i = 0; i < img->height; i++) {
@@ -527,24 +562,23 @@ chk_mem_failed:
 	return cal;
 }
 
-int foo_scan(struct gl843_device *dev)
+int test_scan(struct gl843_device *dev)
 {
 	int ret;
 	struct scan_setup ss = {};
 	struct gl843_image *img = NULL;
 
 	CHK(write_reg(dev, GL843_SCANRESET, 1));
-	while(!read_reg(dev, GL843_HOMESNR))
-		usleep(10000);
+	CHK(wait_until_home(dev));
 
 	CHK(setup_static(dev));
 	ss.source = LAMP_PLATEN;
 	ss.fmt = PXFMT_RGB16;
-	ss.dpi = 80;
-	ss.start_x = 128/15;
-	ss.width = 10208/15;
-	ss.start_y = 600/15;
-	ss.height = 1200/15;
+	ss.dpi = 1200;
+	ss.start_x = 128;
+	ss.width = 10208;
+	ss.start_y = 236;
+	ss.height = 1200;
 	ss.use_backtracking = 1;
 
 	CHK_MEM(img = create_image(ss.width, ss.height, ss.fmt));
@@ -558,14 +592,91 @@ int foo_scan(struct gl843_device *dev)
 
 	write_pnm_image("test.pnm", img);
 
-	while (!read_reg(dev, GL843_HOMESNR))
-		usleep(10000);
+	CHK(wait_until_home(dev));
 	CHK(write_reg(dev, GL843_MTRPWR, 0));
 
 chk_mem_failed:
 chk_failed:
 	free(img);
 	return ret;
+}
+
+/* Warm up the scanner lamp and calibrate the AFE gain and offsets.
+ *
+ * cal_y_pos: calibration y position, distance from home [mm].
+ *
+ * Note: it is assumed the scanner head is in the home position
+ * when this function is called.
+ */
+int warm_up_scanner(struct gl843_device *dev,
+		    enum gl843_lamp source,
+		    int lamp_timeout,
+		    float cal_y_pos)
+{
+	int ret;
+	struct scan_setup ss = {};
+	struct calibration_info *cal;
+
+//	CHK(setup_static(dev));
+
+	CHK(write_reg(dev, GL843_CLRLNCNT, 1));
+
+	CHK_MEM(cal = create_calinfo(ss.source, cal_y_pos,
+		ss.start_x, ss.width, ss.height, ss.dpi));
+
+	/* Move head into position */
+
+	CHK(move_scanner_head(dev, cal_y_pos));
+	CHK(wait_motor(dev));
+
+	/* Setup scan */
+
+	ss.source = source;
+	if (source == LAMP_PLATEN) {
+		ss.fmt = PXFMT_RGB16;
+		ss.dpi = 1200;
+		ss.start_x = 128;
+		ss.width = 10208;
+		ss.start_y = 1000; /* Dummy value */
+		ss.height = 16;
+	} else {
+		DBG(DBG_error, "Only platen scanning is implemented right now.\n");
+		return -1;
+	}
+
+	CHK(setup_common(dev, &ss));
+	CHK(setup_horizontal(dev, &ss));
+//	CHK(setup_vertical(dev, &ss, 1));
+	CHK(select_shading(dev, SHADING_CORR_OFF));
+
+	/* Scan with lamp off and calculate AFE black level */
+
+	CHK(set_lamp(dev, LAMP_OFF, 0));
+
+	usleep(1000000);
+
+	CHK(calc_afe_blacklevel(dev, cal, 75, 0)); /* 75 and 0 are CS4400F-specific */
+
+	/* Turn on the lamp, do warm up scan, and calculate AFE gain */
+
+	CHK(set_lamp(dev, source, lamp_timeout));
+	CHK(warm_up_lamp(dev, cal));
+	CHK(calc_afe_gain(dev, cal));
+
+	/* Move home when finished */
+
+	CHK(move_scanner_head(dev, -cal_y_pos));
+	CHK(wait_motor(dev));
+	CHK(write_reg(dev, GL843_MTRPWR, 0));
+
+	free(cal);
+		
+	ret = 0;
+chk_failed:
+	return ret;
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;	
 }
 
 int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
@@ -576,14 +687,12 @@ int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 	int lamp_to = 4; // FIXME: Get user setting
 
 	CHK(write_reg(dev, GL843_SCANRESET, 1));
-	while(!read_reg(dev, GL843_HOMESNR))
-		usleep(10000);
+	CHK(wait_until_home(dev));
 
 	CHK(setup_static(dev));
 
 	CHK(move_scanner_head(dev, cal_y_pos));
-	while (read_reg(dev, GL843_MOTORENB))
-		usleep(10000);
+	CHK(wait_motor(dev));
 
 	// FIXME: Get user setting
 	ss.source = LAMP_PLATEN;
@@ -643,8 +752,7 @@ Old stuff
 	CHK(send_shading(dev, cal->sc, cal->sc_len, 0));
 	CHK(select_shading(dev, SHADING_CORR_AREA));
 	CHK(move_scanner_head(dev, -cal_y_pos));
-	while (!read_reg(dev, GL843_HOMESNR))
-		usleep(10000);
+	CHK(wait_until_home(dev));
 	CHK(write_reg(dev, GL843_MTRPWR, 0));
 
 	free(cal);
@@ -666,8 +774,7 @@ int reset_and_move_home(struct gl843_device *dev)
 {
 	int ret;
 	CHK(write_reg(dev, GL843_SCANRESET, 1));
-	while(!read_reg(dev, GL843_HOMESNR))
-		usleep(10000);
+	CHK(wait_until_home(dev));
 	ret = 0;
 chk_failed:
 	return ret;

@@ -564,9 +564,6 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	 */
 	c_scan = ss->lperiod * (1 << ss->linesel);
 	c_scan = c_scan * ss->dpi / ss->step_dpi;
-	if (ss->dpi == 75) {
-		c_scan = ss->lperiod / 48; /* Quirk: Slow down 75 dpi */
-	}
 
 	DBG(DBG_info, "c_move = %d, c_scan = %d\n", c_move, c_scan);
 	DBG(DBG_info, "dpi = %d, lperiod = %d, linesel = %d, steptype = %d\n",
@@ -958,6 +955,8 @@ chk_failed:
  *
  * d: moving distance in millimeters. > 0: forward, < 0: back
  *    WARNING: A bad value for d can crash the carriage into the wall.
+ *
+ * Note: This function clobbers settings made by setup_vertical().
  */
 int move_scanner_head(struct gl843_device *dev, float d)
 {
