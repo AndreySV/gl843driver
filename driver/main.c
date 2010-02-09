@@ -1006,6 +1006,8 @@ SANE_Status sane_start(SANE_Handle handle)
 	while(!read_reg(s->hw, GL843_HOMESNR))
 		usleep(10000);
 
+//	test_scan(s->hw);
+#if 1
 	/* Warm up */
 
 	DBG(DBG_msg, "Warming up scanner ...\n");
@@ -1027,9 +1029,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	/* TODO: Set up shading correction for current resolution and width */
 
 	/* TODO: Gamma correction */
-
-//	test_scan(s->hw);
-
+#endif
 //	CHK(reset_and_move_home(s->hw));
 
 //	CHK(setup_common(s->hw, &ss));

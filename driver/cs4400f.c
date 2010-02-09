@@ -512,7 +512,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	const int *vref;
 
 	/* { VRHOME, VRMOVE, VRBACK, VRSCAN }, from Windows driver */
-	const int   vr75dpi[4] = { 0, 0, 7, 0 };
+	const int   vr80dpi[4] = { 0, 0, 7, 0 };
 	const int  vr150dpi[4] = { 1, 0, 7, 1 };
 	const int  vr300dpi[4] = { 5, 0, 7, 5 };
 	const int  vr600dpi[4] = { 1, 0, 7, 1 };
@@ -522,8 +522,8 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	/* Select motor vref (presumably depends on the speed/step type) */
 
 	if (ss->source == LAMP_PLATEN) {
-		if (ss->dpi <= 75) {
-			vref = vr75dpi;
+		if (ss->dpi <= 80) {
+			vref = vr80dpi;
 		} else if (ss->dpi <= 150) {
 			vref = vr150dpi;
 		} else if (ss->dpi <= 300) {
@@ -569,8 +569,13 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	DBG(DBG_info, "dpi = %d, lperiod = %d, linesel = %d, steptype = %d\n",
 		 ss->dpi, ss->lperiod, ss->linesel, ss->steptype);
 
-	build_accel_profile(&move, 12000, c_move, 1.5);
-	build_accel_profile(&scan, 12000, c_scan, 1.5);
+	if (!calibrate) {
+		build_accel_profile(&move, 12000, c_move, 1.5);
+		build_accel_profile(&scan, 12000, c_scan, 1.5);
+	} else {
+		build_accel_profile(&move, c_move, c_move, 1.5);
+		build_accel_profile(&scan, c_scan, c_scan, 1.5);
+	}
 
 	struct regset_ent motor[] = {
 		{ GL843_STEPTIM, STEPTIM },
@@ -580,6 +585,9 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 		{ GL843_AGOHOME, 1 }, /* Move home after scanning */
 		{ GL843_NOTHOME, 0 }, /* Home-sensor signals stop */
 		{ GL843_MTRREV, 0 }, /* 0 = forward motion */
+		{ GL843_CLRLNCNT, 1 }, /* Clear scanned-lines counter (SCANCNT) */
+		{ GL843_CLRMCNT, 1 }, /* Clear feeding counter (FEDCNT) */
+
 		/* Scanning (table 1, 2 and 3) */
 		{ GL843_STOPTIM, 31 },
 		{ GL843_STEPSEL, ss->steptype },

@@ -137,6 +137,13 @@ static int scan_img(struct gl843_device *dev,
 	int ret, i;
 	uint8_t *buf;
 
+	DBG(DBG_info, "scanning %d lines for calibration\n", img->height);
+
+	if (img->height < 1) {
+		DBG(DBG_error0, "BUG: height = %d. Must be >= 1.\n", img->height);
+		return 0;
+	}
+
 	CHK(write_reg(dev, GL843_LINCNT, img->height));
 	CHK(write_reg(dev, GL843_SCAN, 1));
 	CHK(write_reg(dev, GL843_MOVE, 255));
@@ -402,6 +409,9 @@ static int warm_up_lamp(struct gl843_device *dev,
 		usleep(500000);
 		n++;
 	}
+
+	write_pnm_image("test.pnm", img);
+
 	ret = 0;
 chk_failed:
 	free(img);
@@ -577,7 +587,8 @@ int test_scan(struct gl843_device *dev)
 	ss.dpi = 1200;
 	ss.start_x = 128;
 	ss.width = 10208;
-	ss.start_y = 236;
+	//ss.start_y = 236;
+	ss.start_y = 5;
 	ss.height = 1200;
 	ss.use_backtracking = 1;
 
@@ -617,13 +628,6 @@ int warm_up_scanner(struct gl843_device *dev,
 	struct scan_setup ss = {};
 	struct calibration_info *cal;
 
-//	CHK(setup_static(dev));
-
-	CHK(write_reg(dev, GL843_CLRLNCNT, 1));
-
-	CHK_MEM(cal = create_calinfo(ss.source, cal_y_pos,
-		ss.start_x, ss.width, ss.height, ss.dpi));
-
 	/* Move head into position */
 
 	CHK(move_scanner_head(dev, cal_y_pos));
@@ -637,24 +641,27 @@ int warm_up_scanner(struct gl843_device *dev,
 		ss.dpi = 1200;
 		ss.start_x = 128;
 		ss.width = 10208;
-		ss.start_y = 1000; /* Dummy value */
+		ss.start_y = 5; /* Dummy value */
 		ss.height = 16;
 	} else {
 		DBG(DBG_error, "Only platen scanning is implemented right now.\n");
 		return -1;
 	}
 
+	CHK_MEM(cal = create_calinfo(ss.source, cal_y_pos,
+		ss.start_x, ss.width, ss.height, ss.dpi));
+
+	CHK(setup_static(dev));
 	CHK(setup_common(dev, &ss));
 	CHK(setup_horizontal(dev, &ss));
-//	CHK(setup_vertical(dev, &ss, 1));
+	CHK(setup_vertical(dev, &ss, 1));
 	CHK(select_shading(dev, SHADING_CORR_OFF));
 
-	/* Scan with lamp off and calculate AFE black level */
+	/* Scan with motor and lamp off and calculate AFE black level */
 
+	CHK(write_reg(dev, GL843_AGOHOME, 0));
+	CHK(write_reg(dev, GL843_MTRPWR, 0));
 	CHK(set_lamp(dev, LAMP_OFF, 0));
-
-	usleep(1000000);
-
 	CHK(calc_afe_blacklevel(dev, cal, 75, 0)); /* 75 and 0 are CS4400F-specific */
 
 	/* Turn on the lamp, do warm up scan, and calculate AFE gain */
