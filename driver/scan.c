@@ -144,6 +144,7 @@ static int scan_img(struct gl843_device *dev,
 		return 0;
 	}
 
+	CHK_MEM(alloc_line_buffer(dev, img->stride));
 	CHK(write_reg(dev, GL843_LINCNT, img->height));
 	CHK(write_reg(dev, GL843_SCAN, 1));
 	CHK(write_reg(dev, GL843_MOVE, 255));
@@ -152,7 +153,7 @@ static int scan_img(struct gl843_device *dev,
 
 	buf = img->data;
 	for (i = 0; i < img->height; i++) {
-		CHK(read_line(dev, buf, img->stride, img->bpp, timeout));
+		CHK(read_pixels(dev, buf, img->stride, img->bpp, timeout));
 		buf += img->stride;
 	}
 
@@ -161,6 +162,9 @@ static int scan_img(struct gl843_device *dev,
 	ret = 0;
 chk_failed:
 	return ret;
+chk_mem_failed:
+	ret = LIBUSB_ERROR_NO_MEM;
+	goto chk_failed;
 }
 
 /* Color-index-to-name, for debugging purposes */
@@ -628,6 +632,8 @@ int warm_up_scanner(struct gl843_device *dev,
 	struct scan_setup ss = {};
 	struct calibration_info *cal;
 
+	DBG(DBG_msg, "Starting warmup.\n");
+
 	/* Move head into position */
 
 	CHK(move_scanner_head(dev, cal_y_pos));
@@ -677,6 +683,8 @@ int warm_up_scanner(struct gl843_device *dev,
 	CHK(write_reg(dev, GL843_MTRPWR, 0));
 
 	free(cal);
+
+	DBG(DBG_msg, "Done.\n");
 		
 	ret = 0;
 chk_failed:
@@ -685,6 +693,8 @@ chk_mem_failed:
 	ret = LIBUSB_ERROR_NO_MEM;
 	goto chk_failed;	
 }
+
+#if 0
 
 int do_warmup_scan(struct gl843_device *dev, float cal_y_pos)
 {
@@ -771,6 +781,8 @@ chk_mem_failed:
 	ret = LIBUSB_ERROR_NO_MEM;
 	goto chk_failed;	
 }
+
+#endif
 
 int reset_scanner(struct gl843_device *dev)
 {

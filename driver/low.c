@@ -92,6 +92,10 @@ struct gl843_device *create_gl843dev(libusb_device_handle *h)
 
 	dev->usbdev = h;
 
+	dev->lbuf = NULL;
+	dev->lbuf_size = 0;
+	dev->lbuf_capacity = 0;
+
 	dev->regmap = gl843_regmap;
 	dev->devreg_names = gl843_devreg_names;
 	dev->regmap_index = gl843_regmap_index;
@@ -110,6 +114,11 @@ struct gl843_device *create_gl843dev(libusb_device_handle *h)
 /* Destructor */
 void destroy_gl843dev(struct gl843_device *dev)
 {
+	if (dev) {
+		free(dev->lbuf);
+		dev->lbuf = NULL;
+		dev->lbuf_capacity = 0;
+	}
 	free(dev);
 }
 
@@ -469,17 +478,19 @@ chk_failed:
 	return ret;
 }
 
-/* Read image data from the scanner.
- * buf: destination data buffer, at least 'len' bytes long
- * len: number of bytes to read
- * bpp: number of bits per pixel
+/* Receive pixels from the scanner.
+ * buf: destination buffer
+ * len: bytes to read.
+ *      Make sure the GL843 can handle the length.
+ *      Reading complete lines of pixels works well.
+ * bpp: bits per pixel
  * timeout: USB timeout in milliseconds
  */
-int read_line(struct gl843_device *dev,
-	      uint8_t *buf,
-	      size_t len,
-	      int bpp,
-	      unsigned int timeout)
+static int recv_pixels(struct gl843_device *dev,
+		       uint8_t *buf,
+		       size_t len,
+		       unsigned int bpp,
+		       unsigned int timeout)
 {
 	int ret, outlen;
 
@@ -488,11 +499,91 @@ int read_line(struct gl843_device *dev,
 	CHK(usb_bulk_xfer(dev->usbdev, 0x81, buf, len, &outlen, timeout));
 	DBG(DBG_io, "reading %zu bytes, got %d.\n", len, outlen);
 
+	/* Scanner is LE. Swap endianness for BE hosts. */
 	if (host_is_big_endian() && (bpp == 16 || bpp == 48)) {
 		uint16_t *p = (uint16_t *) buf;
 		swap_buffer_endianness(p, p, outlen/2);
 	}
 	ret = outlen;
+chk_failed:
+	return ret;
+}
+
+/* Set up a line buffer for read_pixels().
+ * read_pixels() requests pixels from the scanner in chunks of the given size.
+ * len: Buffer size in bytes.
+ */
+uint8_t *alloc_line_buffer(struct gl843_device *dev, size_t len)
+{
+	dev->lbuf = realloc(dev->lbuf, len);
+	if (dev->lbuf) {
+		dev->lbuf_capacity = len;
+		dev->lbuf_size = 0;
+	}
+	return dev->lbuf;
+}
+
+/* Receive pixels from the scanner.
+ * buf: destination buffer
+ * len: bytes to read
+ * bpp: bits per pixel
+ * timeout: USB timeout in milliseconds
+ */
+int read_pixels(struct gl843_device *dev,
+		uint8_t *dst,
+		size_t len,
+		unsigned int bpp,
+		unsigned int timeout)
+{
+	int ret;
+	size_t n;
+	uint8_t *p;
+
+	p = dst;
+
+	if (dev->lbuf == NULL || dev->lbuf_capacity == 0) {
+		DBG(DBG_error0, "BUG: line buffer not initialized.\n");
+		return LIBUSB_ERROR_INVALID_PARAM;
+	}
+
+	while (len > 0) {
+		if (dev->lbuf_size > 0) {
+			int rest; /* Offset to remaining data in lbuf. */
+			rest = dev->lbuf_capacity - dev->lbuf_size;
+
+			/* Copy bytes in line buffer to caller */
+
+			n = (len <= dev->lbuf_size) ? len : dev->lbuf_size;
+			memcpy(p, dev->lbuf + rest, n);
+			p += n;
+			len -= n;
+			dev->lbuf_size -= n;
+
+		} else { /* lbuf_size == 0 */
+
+			/* Read full line from scanner. Reading odd-sized
+			 * chunks could cause data loss or a stuck USB
+			 * transfer. This is why read_pixels() buffers
+			 * the data in the first place. */
+
+			n = dev->lbuf_capacity;
+
+			if (len >= dev->lbuf_capacity) {
+				/* Read directly to caller buffer */
+
+				CHK(recv_pixels(dev, p, n, bpp, timeout));
+				p += n;
+				len -= n;
+			} else {
+				/* Read into line buffer */
+
+				CHK(recv_pixels(dev, dev->lbuf, n, bpp, timeout));
+				dev->lbuf_size = n;
+			}
+		}
+	}
+	ret = 0;
+
 chk_failed:
 	return ret;
 }

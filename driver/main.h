@@ -128,6 +128,8 @@ typedef struct
 	const SANE_Int *resolutions;
 	SANE_Int dpi;		/* Scan resolution [dots per inch] */
 
+	struct scan_setup setup; /* Scanner setup for current image format */
+
 	/* Gamma correction tables */
 
 	SANE_Bool use_gamma;	/* Gamma correction enabled */

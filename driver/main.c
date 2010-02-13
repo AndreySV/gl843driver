@@ -969,7 +969,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	int ret;
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	SANE_Parameters p;
-	struct scan_setup ss = {};
+	struct scan_setup *ss;
 	float cal_y_pos;
 
 	sane_get_parameters(s, &p);
@@ -979,24 +979,36 @@ SANE_Status sane_start(SANE_Handle handle)
 		return SANE_STATUS_INVAL;
 	}
 
-	ss.source = s->source;
-	ss.fmt = s->depth * (s->mode == SANE_FRAME_RGB ? 3 : 1);
-	ss.dpi = s->dpi;
+	ss = &s->setup;
+	memset(ss, 0, sizeof(*ss));
 
-	ss.start_x = mm_to_px(SANE_FIX(0.0), s->x_start + s->tl_x, s->dpi, NULL);
-	ss.width = p.pixels_per_line;
-	ss.start_y = mm_to_px(SANE_FIX(0.0), s->y_start + s->tl_y, s->dpi, NULL);
-	ss.height = p.lines;
+	ss->source = s->source;
+	ss->fmt = s->depth * (s->mode == SANE_FRAME_RGB ? 3 : 1);
+	ss->dpi = s->dpi;
 
-	ss.bwthr = SANE_UNFIX(s->bw_threshold) * 255 / 100;
-	ss.bwhys = SANE_UNFIX(s->bw_hysteresis) * 255 / 100;
+	ss->start_x = mm_to_px(SANE_FIX(0.0), s->x_start + s->tl_x, s->dpi, NULL);
+	ss->width = p.pixels_per_line;
+	ss->start_y = mm_to_px(SANE_FIX(0.0), s->y_start + s->tl_y, s->dpi, NULL);
+	ss->height = p.lines;
 
-	ss.use_backtracking = 0; /* TODO: Make user controllable */
+	ss->bwthr = SANE_UNFIX(s->bw_threshold) * 255 / 100;
+	ss->bwhys = SANE_UNFIX(s->bw_hysteresis) * 255 / 100;
+
+	ss->use_backtracking = 0; /* TODO: Make user controllable */
 
 	if (s->source == LAMP_PLATEN) {
 		cal_y_pos = SANE_UNFIX(s->y_calpos);
 	} else {
 		cal_y_pos = SANE_UNFIX(s->y_calpos_ta);
+	}
+
+	/* See if the lamp was turned off */
+
+	ret = read_reg(s->hw, GL843_LAMPSTS);
+	CHK(ret);
+	if (ret == 0) {  /* Lamp is off */
+		DBG(DBG_msg, "The lamp was turned off, will perform warm-up.\n");
+		s->need_warmup = SANE_TRUE;
 	}
 
 	/* Ensure the head is home. */
@@ -1006,40 +1018,32 @@ SANE_Status sane_start(SANE_Handle handle)
 	while(!read_reg(s->hw, GL843_HOMESNR))
 		usleep(10000);
 
-//	test_scan(s->hw);
-#if 1
 	/* Warm up */
-
-	DBG(DBG_msg, "Warming up scanner ...\n");
 
 	if (s->need_warmup) {
 		CHK(warm_up_scanner(s->hw, s->source, s->lamp_timeout, cal_y_pos));
 		s->need_warmup = SANE_FALSE;
 	}
 
-	DBG(DBG_msg, "Warming up scanner ... done\n");
+	test_scan(s->hw);
 
 	/* TODO: Set up shading correction */
 
 	if (s->need_shading) {
-
 		s->need_shading = SANE_FALSE;
 	}
 
 	/* TODO: Set up shading correction for current resolution and width */
-
 	/* TODO: Gamma correction */
-#endif
-//	CHK(reset_and_move_home(s->hw));
 
-//	CHK(setup_common(s->hw, &ss));
-//	CHK(setup_horizontal(s->hw, &ss));
-//	CHK(setup_vertical(s->hw, &ss, 1));
-
-//	CHK(select_shading(s->hw, SHADING_CORR_OFF));
+	CHK(setup_static(s->hw));
+	CHK(setup_common(s->hw, ss));
+	CHK(setup_horizontal(s->hw, ss));
+	CHK(setup_vertical(s->hw, ss, 0));
 
 	return SANE_STATUS_UNSUPPORTED;
-	//return SANE_STATUS_GOOD;
+
+	return SANE_STATUS_GOOD;
 chk_failed:
 	return SANE_STATUS_IO_ERROR;
 }
@@ -1049,7 +1053,7 @@ SANE_Status sane_read(SANE_Handle handle,
 		      SANE_Int max_length,
 		      SANE_Int *length)
 {
-//	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
 	return SANE_STATUS_UNSUPPORTED;
 }
 
