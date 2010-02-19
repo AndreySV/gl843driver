@@ -982,7 +982,7 @@ int move_scanner_head(struct gl843_device *dev, float d)
 		feedl = -feedl;
 	}
 
-	build_accel_profile(&move, 5600, 200, 2.0);
+	build_accel_profile(&move, 5600, 240, 2.0);
 
 	feedl = feedl - 2 * move.alen;
 	if (feedl < 0) {
