@@ -129,6 +129,7 @@ typedef struct
 	SANE_Int dpi;		/* Scan resolution [dots per inch] */
 
 	struct scan_setup setup; /* Scanner setup for current image format */
+	int bytes_left;		/* Bytes left to read by the SANE frontend */
 
 	/* Gamma correction tables */
 

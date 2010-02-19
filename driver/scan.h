@@ -39,23 +39,12 @@ struct calibration_info
 	uint16_t A;		/* Shading gain factor (0x2000 or 0x4000) */
 };
 
-struct unshifter
-{
-	int wr;		/* Write cursor */
-	int rd[3];	/* Read cursors */
-	int size;	/* Buffer capacity [number of pixels] */
-	size_t (*unshift)(uint8_t*, size_t, struct unshifter *);
-
-	uint8_t buf[0];
-};
-
-struct unshifter *create_unshifter(int s1, int s2, int s3, int depth);
 int setup_motor(struct gl843_device *dev, struct scan_setup *ss);
 int do_warmup_scan(struct gl843_device *dev, float y_pos);
-int reset_scanner(struct gl843_device *dev);
 int reset_and_move_home(struct gl843_device *dev);
 int warm_up_scanner(struct gl843_device *dev, enum gl843_lamp source,
 	int lamp_timeout, float cal_y_pos);
+int wait_for_pixels(struct gl843_device *dev);
 
 
 #endif /* _SCAN_H_ */

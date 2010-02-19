@@ -112,12 +112,17 @@ int send_gamma_table(struct gl843_device *dev, int table, uint8_t *tbl,
  */
 int send_shading(struct gl843_device *dev, uint16_t *buf, size_t len, int addr);
 
+int reset_scanner(struct gl843_device *dev);
+
+int wait_for_pixels(struct gl843_device *dev);
+
+int start_scan(struct gl843_device *dev);
 
 /* Set up a line buffer for read_pixels().
  * read_pixels() requests pixels from the scanner in chunks of the given size.
  * len: Buffer size in bytes.
  */
-uint8_t *alloc_line_buffer(struct gl843_device *dev, size_t len);
+uint8_t *init_line_buffer(struct gl843_device *dev, size_t len);
 
 /* Receive pixels from the scanner.
  * buf: destination buffer

@@ -120,16 +120,6 @@ static int wait_motor(struct gl843_device *dev)
 	return ret;
 }
 
-static int wait_for_pixels(struct gl843_device *dev)
-{
-	int ret = 1;
-	while (ret > 0) {
-		ret = read_reg(dev, GL843_BUFEMPTY);
-		usleep(1000);
-	}
-	return ret;
-}
-
 static int scan_img(struct gl843_device *dev,
 		    struct gl843_image *img,
 		    int timeout)
@@ -144,7 +134,7 @@ static int scan_img(struct gl843_device *dev,
 		return 0;
 	}
 
-	CHK_MEM(alloc_line_buffer(dev, img->stride));
+	CHK_MEM(init_line_buffer(dev, img->stride));
 	CHK(write_reg(dev, GL843_LINCNT, img->height));
 	CHK(write_reg(dev, GL843_SCAN, 1));
 	CHK(write_reg(dev, GL843_MOVE, 255));
@@ -153,6 +143,7 @@ static int scan_img(struct gl843_device *dev,
 
 	buf = img->data;
 	for (i = 0; i < img->height; i++) {
+		/* FIXME: Check number of bytes received. */
 		CHK(read_pixels(dev, buf, img->stride, img->bpp, timeout));
 		buf += img->stride;
 	}
@@ -784,11 +775,6 @@ chk_mem_failed:
 
 #endif
 
-int reset_scanner(struct gl843_device *dev)
-{
-	return write_reg(dev, GL843_SCANRESET, 1);
-}
-
 int reset_and_move_home(struct gl843_device *dev)
 {
 	int ret;
@@ -799,137 +785,6 @@ chk_failed:
 	return ret;
 }
 
-int start_scan(struct gl843_device *dev)
-{
-	int ret;
 
-	set_reg(dev, GL843_MTRPWR, 1);
-	set_reg(dev, GL843_SCAN, 1);
-	CHK(flush_regs(dev));
-	CHK(write_reg(dev, GL843_MOVE, 16));
-
-	ret = 0;
-chk_failed:
-	return ret;
-}
-
-static size_t unshift16(uint8_t* pixels, size_t count, struct unshifter *us)
-{
-	int i, j, size;
-	size_t N;
-	int rd[3], wr;
-	uint16_t *buf, *px;
-
-	px = (uint16_t *) pixels;
-	buf = (uint16_t *) us->buf;
-	size = us->size;
-	wr = us->wr;
-	for (j = 0; j < 3; j++) {
-		rd[j] = us->rd[j];
-	}
-
-	N = 0;
-	for (i = 0; i < count; i++) {
-		/* Write into circular buffer */
-		for (j = 0; j < 3; j++) {
-			buf[wr++] = *px++;
-		}
-		wr %= size;
-
-		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
-			/* Read from circular buffer if there is enough data. */
-			for (j = 0; j < 3; j++) {
-				px[-3 + j] = buf[rd[j]];
-			}
-			N++;
-		}
-
-		for (j = 0; j < 3; j++) {
-			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
-		}
-	}
-
-	us->wr = wr;
-	for (j = 0; j < 3; j++) {
-		us->rd[j] = rd[j];
-	}
-	return N;
-}
-
-static size_t unshift8(uint8_t* pixels, size_t count, struct unshifter *us)
-{
-	int i, j, size;
-	size_t N;
-	int rd[3], wr;
-	uint8_t *buf, *px;
-
-	px = pixels;
-	buf = us->buf;
-	size = us->size;
-	wr = us->wr;
-	for (j = 0; j < 3; j++) {
-		rd[j] = us->rd[j];
-	}
-
-	N = 0;
-	for (i = 0; i < count; i++) {
-		/* Write into circular buffer */
-		for (j = 0; j < 3; j++) {
-			buf[wr++] = *px++;
-		}
-		wr %= size;
-
-		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
-			/* Read from circular buffer if there is enough data. */
-			for (j = 0; j < 3; j++) {
-				px[-3 + j] = buf[rd[j]];
-			}
-			N++;
-		}
-
-		for (j = 0; j < 3; j++) {
-			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
-		}
-	}
-
-	us->wr = wr;
-	for (j = 0; j < 3; j++) {
-		us->rd[j] = rd[j];
-	}
-	return N;
-}
-
-/* RGB pixel-shift corrector 
- * s1: Pixel shift [pixels] to correct for first (eg red) component.
- * s2: Pixel shift [pixels] to correct for first (eg green) component.
- * s3: Pixel shift [pixels] to correct for first (eg blue) component.
- * depth: Number of bits per channel, 8 or 16.
- */
-struct unshifter *create_unshifter(int s1, int s2, int s3, int depth)
-{
-	struct unshifter *us;
-	int s_min, size;
-
-	/* Ensure at least one shift value is zero. */
-	s_min = min(min(s1, s2), s3);
-	s1 = s1 - s_min;
-	s2 = s2 - s_min;
-	s3 = s3 - s_min;
-
-	/* Create object */
-	size = max(max(s1, s2), s3);
-	us = malloc(sizeof(*us) + size * 3 * (depth / 8));
-	if (!us)
-		return NULL;
-	us->size = size;
-	us->rd[0] = -s1;
-	us->rd[1] = -s2;
-	us->rd[2] = -s3;
-	us->wr = 0;
-
-	us->unshift = (depth == 16) ? unshift16 : unshift8;
-
-	return us;
-}
 
 

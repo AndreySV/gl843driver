@@ -994,7 +994,7 @@ SANE_Status sane_start(SANE_Handle handle)
 	ss->bwthr = SANE_UNFIX(s->bw_threshold) * 255 / 100;
 	ss->bwhys = SANE_UNFIX(s->bw_hysteresis) * 255 / 100;
 
-	ss->use_backtracking = 0; /* TODO: Make user controllable */
+	ss->use_backtracking = 1; /* TODO: Make user controllable */
 
 	if (s->source == LAMP_PLATEN) {
 		cal_y_pos = SANE_UNFIX(s->y_calpos);
@@ -1025,7 +1025,7 @@ SANE_Status sane_start(SANE_Handle handle)
 		s->need_warmup = SANE_FALSE;
 	}
 
-	test_scan(s->hw);
+//	test_scan(s->hw);
 
 	/* TODO: Set up shading correction */
 
@@ -1036,16 +1036,28 @@ SANE_Status sane_start(SANE_Handle handle)
 	/* TODO: Set up shading correction for current resolution and width */
 	/* TODO: Gamma correction */
 
-	CHK(setup_static(s->hw));
+	s->bytes_left = p.bytes_per_line * p.lines;
+
+	DBG(DBG_msg, "p.bytes_per_line = %d, lines = %d\n",
+		p.bytes_per_line, p.lines);
+	DBG(DBG_msg, "s->bytes_left = %d\n", s->bytes_left);
+
+
+	int foo = p.bytes_per_line; // FIXME: Remove foo.
+	CHK_MEM(init_line_buffer(s->hw, foo));
+
 	CHK(setup_common(s->hw, ss));
 	CHK(setup_horizontal(s->hw, ss));
 	CHK(setup_vertical(s->hw, ss, 0));
+	CHK(start_scan(s->hw));
 
-	return SANE_STATUS_UNSUPPORTED;
+//	return SANE_STATUS_UNSUPPORTED;
 
 	return SANE_STATUS_GOOD;
 chk_failed:
 	return SANE_STATUS_IO_ERROR;
+chk_mem_failed:
+	return SANE_STATUS_NO_MEM;
 }
 
 SANE_Status sane_read(SANE_Handle handle,
@@ -1053,8 +1065,26 @@ SANE_Status sane_read(SANE_Handle handle,
 		      SANE_Int max_length,
 		      SANE_Int *length)
 {
+	int ret;
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
-	return SANE_STATUS_UNSUPPORTED;
+	int len;
+
+	if (s->bytes_left <= 0) {
+		*length = 0;
+		return SANE_STATUS_EOF;
+	}
+
+	DBG(DBG_info, "%d bytes left %d bytes requested.\n",
+		s->bytes_left, max_length);
+
+	len = s->bytes_left > max_length ? max_length : s->bytes_left;
+	CHK(read_pixels(s->hw, data, len, s->setup.fmt, 10000));
+	s->bytes_left -= len;
+	*length = len;
+
+	return SANE_STATUS_GOOD;
+chk_failed:
+	return SANE_STATUS_IO_ERROR;
 }
 
 void sane_cancel(SANE_Handle handle)
