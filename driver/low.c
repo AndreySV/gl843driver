@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 Andreas Robinson <andr345 at gmail dot com>
+ * Copyright (C) 2009-2010 Andreas Robinson <andr345 at gmail dot com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -333,6 +333,7 @@ int write_regs(struct gl843_device *dev, struct regset_ent *regset, size_t len)
 	return flush_regs(dev);
 }
 
+/* Prepare the scanner for a bulk transfer */
 static int write_bulk_setup(struct gl843_device *dev,
 			    enum gl843_reg port, size_t size, int dir)
 {
@@ -508,7 +509,7 @@ static int recv_pixels(struct gl843_device *dev,
 	CHK(write_reg(dev, GL843_RAMADDR, 0));
 	CHK(write_bulk_setup(dev, GL843__RAMRDDATA_, len, BULK_IN));
 	CHK(usb_bulk_xfer(dev->usbdev, 0x81, buf, len, &outlen, timeout));
-	DBG(DBG_io, "reading %zu bytes, got %d.\n", len, outlen);
+	DBG(DBG_io, "requesting %zu bytes, got %d.\n", len, outlen);
 
 	if (host_is_big_endian() && (bpp == 16 || bpp == 48)) {
 		uint16_t *p = (uint16_t *) buf;
@@ -537,8 +538,6 @@ int start_scan(struct gl843_device *dev)
 chk_failed:
 	return ret;
 }
-
-
 
 /* Set up a line buffer for read_pixels().
  * read_pixels() requests pixels from the scanner in chunks of the given size.
@@ -618,136 +617,5 @@ int read_pixels(struct gl843_device *dev,
 
 chk_failed:
 	return ret;
-}
-
-struct unshifter
-{
-	int wr;		/* Write cursor */
-	int rd[3];	/* Read cursors */
-	int size;	/* Buffer capacity [number of pixels] */
-	size_t (*unshift)(uint8_t*, size_t, struct unshifter *);
-
-	uint8_t buf[0];
-};
-
-struct unshifter *create_unshifter(int s1, int s2, int s3, int depth);
-
-static size_t unshift16(uint8_t* pixels, size_t count, struct unshifter *us)
-{
-	int i, j, size;
-	size_t N;
-	int rd[3], wr;
-	uint16_t *buf, *px;
-
-	px = (uint16_t *) pixels;
-	buf = (uint16_t *) us->buf;
-	size = us->size;
-	wr = us->wr;
-	for (j = 0; j < 3; j++) {
-		rd[j] = us->rd[j];
-	}
-
-	N = 0;
-	for (i = 0; i < count; i++) {
-		/* Write into circular buffer */
-		for (j = 0; j < 3; j++) {
-			buf[wr++] = *px++;
-		}
-		wr %= size;
-
-		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
-			/* Read from circular buffer if there is enough data. */
-			for (j = 0; j < 3; j++) {
-				px[-3 + j] = buf[rd[j]];
-			}
-			N++;
-		}
-
-		for (j = 0; j < 3; j++) {
-			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
-		}
-	}
-
-	us->wr = wr;
-	for (j = 0; j < 3; j++) {
-		us->rd[j] = rd[j];
-	}
-	return N;
-}
-
-static size_t unshift8(uint8_t* pixels, size_t count, struct unshifter *us)
-{
-	int i, j, size;
-	size_t N;
-	int rd[3], wr;
-	uint8_t *buf, *px;
-
-	px = pixels;
-	buf = us->buf;
-	size = us->size;
-	wr = us->wr;
-	for (j = 0; j < 3; j++) {
-		rd[j] = us->rd[j];
-	}
-
-	N = 0;
-	for (i = 0; i < count; i++) {
-		/* Write into circular buffer */
-		for (j = 0; j < 3; j++) {
-			buf[wr++] = *px++;
-		}
-		wr %= size;
-
-		if ((rd[0] >= 0) && (rd[1] >= 0) && (rd[2] >= 0)) {
-			/* Read from circular buffer if there is enough data. */
-			for (j = 0; j < 3; j++) {
-				px[-3 + j] = buf[rd[j]];
-			}
-			N++;
-		}
-
-		for (j = 0; j < 3; j++) {
-			rd[j] = (rd[j] + 3*sizeof(*buf)) % size;
-		}
-	}
-
-	us->wr = wr;
-	for (j = 0; j < 3; j++) {
-		us->rd[j] = rd[j];
-	}
-	return N;
-}
-
-/* RGB pixel-shift corrector 
- * s1: Pixel shift [pixels] to correct for first (eg red) component.
- * s2: Pixel shift [pixels] to correct for first (eg green) component.
- * s3: Pixel shift [pixels] to correct for first (eg blue) component.
- * depth: Number of bits per channel, 8 or 16.
- */
-struct unshifter *create_unshifter(int s1, int s2, int s3, int depth)
-{
-	struct unshifter *us;
-	int s_min, size;
-
-	/* Ensure at least one shift value is zero. */
-	s_min = min(min(s1, s2), s3);
-	s1 = s1 - s_min;
-	s2 = s2 - s_min;
-	s3 = s3 - s_min;
-
-	/* Create object */
-	size = max(max(s1, s2), s3);
-	us = malloc(sizeof(*us) + size * 3 * (depth / 8));
-	if (!us)
-		return NULL;
-	us->size = size;
-	us->rd[0] = -s1;
-	us->rd[1] = -s2;
-	us->rd[2] = -s3;
-	us->wr = 0;
-
-	us->unshift = (depth == 16) ? unshift16 : unshift8;
-
-	return us;
 }
 

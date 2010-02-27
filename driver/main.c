@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 Andreas Robinson <andr345 at gmail dot com>
+ * Copyright (C) 2009-2010 Andreas Robinson <andr345 at gmail dot com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
