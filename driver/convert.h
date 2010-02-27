@@ -37,24 +37,24 @@ struct pixel_converter
 };
 
 struct pixel_converter *create_pixel_converter(
-	int depth, int ncomp, int *shifts, int dir);
+	int depth, int ncomp, int *shifts, int scanner_endianness);
 void destroy_pixel_converter(struct pixel_converter *pconv);
 
 #endif /* _CONVERT_H_ */
 
 #else /* CONVERT_INTERNAL */
 
-static size_t CONVERT(struct pixel_converter *pc,
+static size_t CONVERT(struct pixel_converter *pconv,
 		      uint8_t* pixels,
 		      size_t count)
 {
 	int i, j;
 	CTYPE *px = (CTYPE *) pixels;
-	CTYPE *buf = (CTYPE *) pc->buf;
-	int size = pc->size;
-	int ncomp = pc->ncomp;
-	int rd = pc->rd;
-	int *wr = pc->wr;
+	CTYPE *buf = (CTYPE *) pconv->buf;
+	int size = pconv->size;
+	int ncomp = pconv->ncomp;
+	int rd = pconv->rd;
+	int *wr = pconv->wr;
 	size_t N = 0;
 
 	for (i = 0; i < count; i++) {
@@ -75,7 +75,7 @@ static size_t CONVERT(struct pixel_converter *pc,
 		}
 	}
 
-	pc->rd = rd;
+	pconv->rd = rd;
 	return N;
 }
 

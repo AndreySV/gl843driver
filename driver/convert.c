@@ -17,7 +17,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <endian.h>
 #include <sane/sane.h>
 
 #include "util.h"
@@ -25,22 +24,26 @@
 
 #define CONVERT_INTERNAL
 
+static uint16_t my_bswap_16(uint16_t x) {
+	return (x >> 8) | (x << 8);
+}
+
 /* define convert8() */
 #define CONVERT convert8
 #define CTYPE uint8_t
 #define BSWAP(x) (x)
 #include "convert.h"
 
-/* define convert16_from_scanner() */
-#define CONVERT convert16_from_scanner
+/* define convert16() */
+#define CONVERT convert16
 #define CTYPE uint16_t
-#define BSWAP(x) le16toh(x)
+#define BSWAP(x) (x)
 #include "convert.h"
 
-/* define convert16_to_scanner() */
-#define CONVERT convert16_to_scanner
+/* define convert16_swap() */
+#define CONVERT convert16_swap
 #define CTYPE uint16_t
-#define BSWAP(x) htole16(x)
+#define BSWAP(x) my_bswap_16(x)
 #include "convert.h"
 
 /* Convert between host and scanner endianness,
@@ -54,9 +57,7 @@
  *         where 0 <= i <= ncomp-1 is the pixel component number.
  *         The unit of the offset values are "number of components".
  *         See below for examples.
- *
- * dir:    Convert endianness, 0: from scanner to host,
- *                             1: from host to scanner.
+ * scanner_endianness:    1 = little endian, 2 = big endian
  *
  * Note:
  *
@@ -70,7 +71,7 @@
 struct pixel_converter *create_pixel_converter(int depth,
 					       int ncomp,
 					       int *shifts,
-					       int dir)
+					       int scanner_endianness)
 {
 	int i;
 	int s_min, s_max; /* Min/max shift */
@@ -89,8 +90,22 @@ struct pixel_converter *create_pixel_converter(int depth,
 		s_min = 0;
 		s_max = ncomp;
 	}
-
 	CHK_MEM(pconv = calloc(sizeof(*pconv), 1));
+
+	if (depth == 8) {
+		pconv->convert = convert8;
+	} else if (depth == 16) {
+		if (native_endianness() != scanner_endianness) {
+			pconv->convert = convert16_swap;
+		} else {
+			pconv->convert = convert16;
+		}
+	} else {
+		DBG(DBG_error0, "BUG: unsupported pixel depth\n");
+		goto chk_mem_failed;
+	}
+
+
 	CHK_MEM(pconv->wr = calloc(sizeof(*(pconv->wr)) * ncomp, 1));
 
 	pconv->ncomp = ncomp;
@@ -110,15 +125,6 @@ struct pixel_converter *create_pixel_converter(int depth,
 		pconv->wr[i] = shifts[i] - s_min;
 	}
 
-	if (depth == 8) {
-		pconv->convert = convert8;
-	} else if (depth == 16) {
-		pconv->convert = (dir == 0) ?
-			convert16_to_scanner : convert16_from_scanner;
-	} else {
-		DBG(DBG_error0, "BUG: unsupported pixel depth\n");
-		goto chk_mem_failed;
-	}
 	return pconv;
 
 chk_mem_failed:
