@@ -10,6 +10,7 @@ int write_afe_gain(struct gl843_device *dev, int i, float g);
 
 int setup_static(struct gl843_device *dev);
 int setup_common(struct gl843_device *dev, struct scan_setup *ss);
+struct pixel_converter *setup_pixel_converter(struct scan_setup *ss);
 int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrate);
 int setup_horizontal(struct gl843_device *dev, struct scan_setup *ss);
 

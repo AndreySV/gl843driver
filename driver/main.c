@@ -61,9 +61,9 @@ const SANE_String_Const cs4400f_mode_names[] = {
 const SANE_Int cs4400f_bit_depths[]  = { 2, 8, 16 };
 const SANE_Int cs4400f_resolutions[] = { 8, 80, 100, 150, 200, 300, 400, 600, 1200 };
 const SANE_Range cs4400f_x_limit     = { SANE_FIX(0.0), SANE_FIX(216.0), 0 };
-const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(300.0), 0 };
+const SANE_Range cs4400f_y_limit     = { SANE_FIX(0.0), SANE_FIX(297.5), 0 };
 const SANE_Fixed cs4400f_x_start     = SANE_FIX(2.7);  /* Platen left edge */
-const SANE_Fixed cs4400f_y_start     = SANE_FIX(12.0); /* Platen top edge */
+const SANE_Fixed cs4400f_y_start     = SANE_FIX(11.7); /* Platen top edge */
 const SANE_Fixed cs4400f_y_calpos    = SANE_FIX(5.0);
 const SANE_Range cs4400f_x_limit_ta  = { SANE_FIX(0.0), SANE_FIX(24.0), 0 };
 const SANE_Range cs4400f_y_limit_ta  = { SANE_FIX(0.0), SANE_FIX(226.0), 0 };
@@ -184,7 +184,7 @@ static CS4400F_Scanner *create_CS4400F()
 
 	s->source = LAMP_PLATEN;
 	s->lamp_to_lim = (SANE_Range){ 0, 15, 0 };
-	s->lamp_timeout = 4;
+	s->lamp_timeout = 15;
 
 	s->x_scan_lim.min = SANE_FIX(0.0);
 	s->x_scan_lim.max = s->x_limit.max - s->x_limit.min,
@@ -1025,8 +1025,6 @@ SANE_Status sane_start(SANE_Handle handle)
 		s->need_warmup = SANE_FALSE;
 	}
 
-//	test_scan(s->hw);
-
 	/* TODO: Set up shading correction */
 
 	if (s->need_shading) {
@@ -1047,11 +1045,10 @@ SANE_Status sane_start(SANE_Handle handle)
 	CHK_MEM(init_line_buffer(s->hw, foo));
 
 	CHK(setup_common(s->hw, ss));
+	s->hw->pconv = setup_pixel_converter(ss);
 	CHK(setup_horizontal(s->hw, ss));
 	CHK(setup_vertical(s->hw, ss, 0));
 	CHK(start_scan(s->hw));
-
-//	return SANE_STATUS_UNSUPPORTED;
 
 	return SANE_STATUS_GOOD;
 chk_failed:
@@ -1079,6 +1076,7 @@ SANE_Status sane_read(SANE_Handle handle,
 
 	len = s->bytes_left > max_length ? max_length : s->bytes_left;
 	CHK(read_pixels(s->hw, data, len, s->setup.fmt, 10000));
+
 	s->bytes_left -= len;
 	*length = len;
 
@@ -1091,6 +1089,8 @@ void sane_cancel(SANE_Handle handle)
 {
 	int ret;
 	CS4400F_Scanner *s = (CS4400F_Scanner *) handle;
+	destroy_pixel_converter(s->hw->pconv);
+	s->hw->pconv = NULL;
 	CHK(reset_scanner(s->hw));
 	CHK(set_lamp(s->hw, s->source, s->lamp_timeout));
 chk_failed:

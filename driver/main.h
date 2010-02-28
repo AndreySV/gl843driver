@@ -78,6 +78,7 @@ typedef struct
 typedef struct
 {
 	struct gl843_device *hw;
+	struct pixel_converter *pconv;
 
 	SANE_Bool need_warmup;
 	SANE_Bool need_shading;

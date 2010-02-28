@@ -72,6 +72,7 @@ struct scan_setup {
 	int width;		/* Pixels per line */
 	int start_y;		/* Steps from top edge */
 	int height;		/* Lines */
+	int overscan;		/* Extra lines for correcting CCD RGB line distances */
 	float bwthr;		/* Black/white threshold (0.0 - 1.0) */
 	float bwhys;		/* Black/white hysteresis (0.0 - 1.0) */
 	int use_backtracking;

@@ -96,6 +96,8 @@ struct gl843_device *create_gl843dev(libusb_device_handle *h)
 	dev->lbuf_size = 0;
 	dev->lbuf_capacity = 0;
 
+	dev->pconv = NULL;
+
 	dev->regmap = gl843_regmap;
 	dev->devreg_names = gl843_devreg_names;
 	dev->regmap_index = gl843_regmap_index;
@@ -493,8 +495,9 @@ int wait_for_pixels(struct gl843_device *dev)
 /* Receive pixels from the scanner.
  * buf: destination buffer
  * len: bytes to read.
- *      Make sure the GL843 can handle the length.
- *      Reading complete lines of pixels works well.
+ *	Must equal a full number of pixels.
+ *      The GL843 doesn't handle arbitrary lengths either,
+ *      however reading complete lines of pixels works well.
  * bpp: bits per pixel
  * timeout: USB timeout in milliseconds
  */
@@ -511,9 +514,13 @@ static int recv_pixels(struct gl843_device *dev,
 	CHK(usb_bulk_xfer(dev->usbdev, 0x81, buf, len, &outlen, timeout));
 	DBG(DBG_io, "requesting %zu bytes, got %d.\n", len, outlen);
 
-	if (host_is_big_endian() && (bpp == 16 || bpp == 48)) {
-		uint16_t *p = (uint16_t *) buf;
-		swap_buffer_endianness(p, p, outlen/2);
+	if (dev->pconv) {
+		int n = 8*outlen / bpp;
+		if (outlen % (bpp / 8)) {
+			DBG(DBG_warn, "Warning: outlen is not a full number of pixels\n");
+		}
+		n = dev->pconv->convert(dev->pconv, buf, n);
+		outlen = n * bpp / 8;
 	}
 	ret = outlen;
 chk_failed:
@@ -590,7 +597,7 @@ int read_pixels(struct gl843_device *dev,
 			dev->lbuf_size -= n;
 
 		} else { /* lbuf_size == 0 */
-
+			int m;
 			/* Read full line from scanner. Reading odd-sized
 			 * chunks could cause data loss or a stuck USB
 			 * transfer. This is why read_pixels() buffers
@@ -601,15 +608,14 @@ int read_pixels(struct gl843_device *dev,
 			if (len >= dev->lbuf_capacity) {
 				/* Read directly to caller buffer */
 				CHK(wait_for_pixels(dev));
-				CHK(recv_pixels(dev, p, n, bpp, timeout));
-				p += n;
-				len -= n;
+				CHK(m = recv_pixels(dev, p, n, bpp, timeout));
+				p += m;
+				len -= m;
 			} else {
 				/* Read into line buffer */
-				/* FIXME: Check number of bytes received. */
 				CHK(wait_for_pixels(dev));
-				CHK(recv_pixels(dev, dev->lbuf, n, bpp, timeout));
-				dev->lbuf_size = n;
+				CHK(m = recv_pixels(dev, dev->lbuf, n, bpp, timeout));
+				dev->lbuf_size = m;
 			}
 		}
 	}

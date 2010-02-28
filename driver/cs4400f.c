@@ -19,6 +19,7 @@
 #include <math.h>
 #include <sane/sane.h>
 #include "util.h"
+#include "convert.h"
 #include "low.h"
 #include "scan.h"
 #include "cs4400f.h"
@@ -101,8 +102,9 @@ void build_accel_profile(struct motor_accel *m,
 
 	K = pow(c_start, exp);
 	m->a[0] = c_start;
+	m->a[1] = c_start; /* Two steps at c_start may reduce stalling risk.  */
 	n = -1;
-	for (i = 1; i < MTRTBL_SIZE; i++) {
+	for (i = 2; i < MTRTBL_SIZE; i++) {
 		uint16_t c = pow(K / (double)i, 1/exp);
 		if (c <= c_end) {
 			m->a[i] = c_end;
@@ -417,6 +419,45 @@ int setup_common(struct gl843_device *dev, struct scan_setup *ss)
 	return 0;
 }
 
+struct pixel_converter *setup_pixel_converter(struct scan_setup *ss)
+{
+	int shift[3] = {0,0,0};
+	int order[3] = {0,1,2};
+	int line_distance;
+	int depth, ncomp;
+
+	line_distance = (ss->dpi * 24) / 1200;
+
+	switch (ss->fmt) {
+	case PXFMT_GRAY16:
+		depth = 16;
+		ncomp = 1;
+		ss->overscan = 0;
+		break;
+	case PXFMT_RGB8:
+		depth = 8;
+		ncomp = 3;
+		shift[0] = 0 * line_distance * ss->width;
+		shift[1] = 1 * line_distance * ss->width;
+		shift[2] = 2 * line_distance * ss->width;
+		ss->overscan = 2 * line_distance;
+		break;
+	case PXFMT_RGB16:
+		depth = 16;
+		ncomp = 3;
+		shift[0] = 0 * line_distance * ss->width;
+		shift[1] = 1 * line_distance * ss->width;
+		shift[2] = 2 * line_distance * ss->width;
+		ss->overscan = 2 * line_distance;
+		break;
+	default:
+		ss->overscan = 0;
+		return NULL; /* No converter needed */
+	}
+
+	return create_pixel_converter(depth, ncomp, shift, order, 1);
+}
+
 /* Ref: gl843 datasheet, FMOVNO register
 
 Scanning with fast feed (FASTFED = 1)   Direction: ----->
@@ -627,6 +668,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 		feedl = start_y;
 		feedl -= scan.alen;
 		if (feedl < 1) {
+			/* TODO: Mark this as a scanner-setup bug instead */
 			DBG(DBG_warn, "Cannot start scan early enough.\n");
 			DBG(DBG_warn, "Skipping %d lines at the top.\n",
 				1 - feedl);
@@ -649,7 +691,7 @@ int setup_vertical(struct gl843_device *dev, struct scan_setup *ss, int calibrat
 	z2mod = (scan.t_max + scan.a[scan.alen - 1] * n) % lperiod;
 
 	set_reg(dev, GL843_FEEDL, feedl);
-	set_reg(dev, GL843_LINCNT, ss->height);
+	set_reg(dev, GL843_LINCNT, ss->height + ss->overscan);
 	set_reg(dev, GL843_Z2MOD, z2mod);
 
 	if (backtrack > 0) {
@@ -982,7 +1024,7 @@ int move_scanner_head(struct gl843_device *dev, float d)
 		feedl = -feedl;
 	}
 
-	build_accel_profile(&move, 5600, 240, 2.0);
+	build_accel_profile(&move, 5600, 300, 2.0);
 
 	feedl = feedl - 2 * move.alen;
 	if (feedl < 0) {

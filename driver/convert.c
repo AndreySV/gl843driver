@@ -51,79 +51,63 @@ static uint16_t my_bswap_16(uint16_t x) {
  * and correct for the the RGB line-distances in the scanner CCD.
  *
  * depth:  Number of bits per pixel component (a.k.a channel), 8 or 16.
- * ncomp:  Number of pixel components, typically 3 for RGB.
- * shifts: List of pixel component offsets. List length is given in ncomp.
- *         Incoming data will be buffered at an offset, given in shifts[i]
- *         where 0 <= i <= ncomp-1 is the pixel component number.
+ * ncomp:  Number of components per pixel, e.g 3 for RGB.
+ * shift:  List of pixel component shifts. List length is given by ncomp.
+ *         Incoming pixel component i will be delayed for shift[i] pixels.
  *         The unit of the offset values are "number of components".
- *         See below for examples.
- * scanner_endianness:    1 = little endian, 2 = big endian
- *
- * Note:
- *
- * Some examples of shifts. ncomp = 3.
- *
- * 1. No operation (RGB->RGB, no pixel shifting):       shifts[] = { 0,  1, 2}
- * 2. Convert BGR to RGB:                               shifts[] = { 2,  1, 0}
- * 3. Shift red 5 pixels, green 10, blue zero pixels:   shifts[] = {15, 31, 2}
- * 4. Combination of 2 and 3 (BGR->RGB and shift):      shifts[] = {17, 31, 0}
+ * order:  List of pixel component ordering.
+ *         {2,1,0} will reorder BGR to RGB (or vice versa), {0,1,2} does nothing.
+ * se:     scanner endianness: 1 = little endian, 2 = big endian
  */
 struct pixel_converter *create_pixel_converter(int depth,
 					       int ncomp,
-					       int *shifts,
-					       int scanner_endianness)
+					       int *shift,
+					       int *order,
+					       int se)
 {
 	int i;
-	int s_min, s_max; /* Min/max shift */
+	int numpixels;	/* Number of pixels in buffer */
 	struct pixel_converter *pconv;
 
-	if (ncomp > 1) {
-		s_min = shifts[0];
-		s_max = shifts[0];
-		for (i = 1; i < ncomp; i++) {
-			if (shifts[i] > s_max)
-				s_max = shifts[i];
-			if (shifts[i] < s_min)
-				s_min = shifts[i];
-		}
-	} else {
-		s_min = 0;
-		s_max = ncomp;
-	}
 	CHK_MEM(pconv = calloc(sizeof(*pconv), 1));
+	CHK_MEM(pconv->wr = calloc(sizeof(*(pconv->wr)) * ncomp, 1));
 
 	if (depth == 8) {
 		pconv->convert = convert8;
 	} else if (depth == 16) {
-		if (native_endianness() != scanner_endianness) {
-			pconv->convert = convert16_swap;
-		} else {
-			pconv->convert = convert16;
-		}
+		pconv->convert = (native_endianness() != se)
+			? convert16_swap : convert16;
 	} else {
 		DBG(DBG_error0, "BUG: unsupported pixel depth\n");
 		goto chk_mem_failed;
 	}
 
+	numpixels = 1;
+	pconv->wr[0] = 0; /* Ignore shift[] and order[] when ncomp == 1 */
+	if (ncomp > 1) {
+		for (i = 0; i < ncomp; i++) {
+			if (shift[i] > numpixels)
+				numpixels = shift[i];
+		}
+		numpixels++;
+		for (i = 0; i < ncomp; i++) {
+			pconv->wr[i] = (ncomp * shift[i] + order[i]) % (numpixels * ncomp);
+		}
+	}
+	DBG(DBG_msg, "numpixels = %d, ncomp = %d, depth = %d\n",
+		numpixels, ncomp, depth);
+	for (i = 0; i < ncomp; i++) {
+		DBG(DBG_msg, "wr[%d] = %d\n", i, pconv->wr[i]);
+	}
 
-	CHK_MEM(pconv->wr = calloc(sizeof(*(pconv->wr)) * ncomp, 1));
+	pconv->sdelay = -numpixels + 1;
+	pconv->rd = (numpixels - 1) * ncomp;
 
 	pconv->ncomp = ncomp;
 	pconv->depth = depth;
-	pconv->size = s_max - s_min;
+	pconv->numpixels = numpixels;
 
-	if (pconv->size % ncomp != 0) {
-		/* Round up buffer size to hold full pixels */
-		pconv->size += ncomp - (pconv->size % ncomp);
-	}
-
-	pconv->rd = -pconv->size; 	 /* rd < 0 delays reads. */
-
-	CHK_MEM(pconv->buf = calloc(pconv->size * depth / 8, 1));
-	
-	for (i = 0; i < ncomp; i++) {
-		pconv->wr[i] = shifts[i] - s_min;
-	}
+	CHK_MEM(pconv->buf = calloc(numpixels * ncomp * depth / 8, 1));
 
 	return pconv;
 
@@ -140,4 +124,60 @@ void destroy_pixel_converter(struct pixel_converter *pconv)
 	}
 	free (pconv);
 }
+
+#if 0
+
+/* Converter unit test */
+
+#include <stdio.h>
+
+void dump_buf(void *p, int n)
+{
+	int i, j = 0;
+	uint16_t *buf = p;
+	for (i = 0; i < n; i += 3) {
+		printf("%04x %04x %04x    ", buf[i], buf[i+1], buf[i+2]);
+		j++;
+		if (j == 5) {
+			j = 0;
+			printf("\n");
+		}
+	}
+	printf("\n");
+}
+
+int main()
+{
+	const int N = 85;
+	int i,j,m;
+	uint16_t buf[N*3];
+	int shift[3] = {20, 10, 0};
+	int order[3] = {0, 1, 2};
+	struct pixel_converter *pconv;
+
+	memset(buf, 0xff, N*3);
+
+	for (i = 0, j = 0; i < N*3; i += 3) {
+		if (i % 15 == 0)
+			j += 0x10;
+		buf[i] = j+1;
+	}
+	for (i = 30, j = 0; i < N*3; i += 3) {
+		if (i % 15 == 0)
+			j += 0x10;
+		buf[i+1] = j+2;
+	}
+	for (i = 60, j = 0; i < N*3; i += 3) {
+		if (i % 15 == 0)
+			j += 0x10;
+		buf[i+2] = j+3;
+	}
+
+	dump_buf(buf, N*3);
+	pconv = create_pixel_converter(16, 3, shift, order, 1);
+	m = pconv->convert(pconv, (uint8_t *)buf, N);
+	dump_buf(buf, m*3);
+	return 0;
+}
+#endif
 

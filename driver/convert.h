@@ -21,23 +21,24 @@
 struct pixel_converter
 {
 	uint8_t *buf;	/* Circular pixel buffer */
-	int size;	/* Buffer capacity [number of color components] */
+	int numpixels;	/* Buffer capacity [number pixels] */
 	int depth;	/* Number of bits per color component */
-	int ncomp;	/* Number of color components per pixel, e.g 1 or 3 */
+	int ncomp;	/* Number of color components per pixel, */
 	int *wr;	/* List of write offsets. Has ncomp elements. */
 	int rd;		/* Read offset  */
+	int sdelay;	/* Number of pixels to wait before returning data */
 
 	/* Pixel converter method. Convert given pixels in-place.
 	 * buf:   pixels to convert
 	 * count: number of pixels
-	 * Returns: number of pixels processed, if any. buf is updated
+	 * Returns: number of pixels returned, if any. buf is updated
 	 * Note: may return less than 'count' pixels, including none.
 	 */
 	size_t (*convert)(struct pixel_converter *, uint8_t *buf, size_t count);
 };
 
 struct pixel_converter *create_pixel_converter(
-	int depth, int ncomp, int *shifts, int scanner_endianness);
+	int depth, int ncomp, int *shift, int *order, int scanner_endianness);
 void destroy_pixel_converter(struct pixel_converter *pconv);
 
 #endif /* _CONVERT_H_ */
@@ -49,29 +50,36 @@ static size_t CONVERT(struct pixel_converter *pconv,
 		      size_t count)
 {
 	int i, j;
-	CTYPE *px = (CTYPE *) pixels;
+	CTYPE *src = (CTYPE *) pixels;
+	CTYPE *dst = (CTYPE *) pixels;
 	CTYPE *buf = (CTYPE *) pconv->buf;
-	int size = pconv->size;
+	int numpixels = pconv->numpixels;
 	int ncomp = pconv->ncomp;
 	int rd = pconv->rd;
 	int *wr = pconv->wr;
 	size_t N = 0;
 
 	for (i = 0; i < count; i++) {
-		/* Store a pixel, optionally rearranging the components,
-		 * and possibly swapping the endianness. */
+
+		/* Store a pixel, possibly swapping the endianness. */
+
 		for (j = 0; j < ncomp; j++) {
-			buf[wr[j]] = BSWAP(*px++);
-			wr[j] = (wr[j] + ncomp) % size;
+			//DBG(DBG_info, "wr: buf[%d] = *(0x%x)\n", wr[j], (int)((uint8_t*)src-pixels));
+			//buf[wr[j]] = BSWAP(*src++);
+			buf[wr[j]] = *src++;
+			wr[j] = (wr[j] + ncomp) % (ncomp*numpixels);
 		}
 
 		/* Return a pixel, if any are available. */
-		if (rd >= 0) {
+		if (pconv->sdelay >= 0) {
 			for (j = 0; j < ncomp; j++) {
-				px[-ncomp + j] = buf[rd + j];
+				//DBG(DBG_info, "rd: *(0x%x) = buf[%d]\n", (int)((uint8_t*)dst-pixels), rd + j);
+				*dst++ = buf[rd + j];
 			}
-			rd = (rd + ncomp) % size;
+			rd = (rd + ncomp) % (ncomp*numpixels);
 			N++;
+		} else {
+			pconv->sdelay += 1;
 		}
 	}
 

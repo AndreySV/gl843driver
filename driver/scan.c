@@ -304,7 +304,7 @@ static int calc_afe_blacklevel(struct gl843_device *dev,
 	CHK(scan_img(dev, img, 10000));
 	get_image_stats(img, &hi_stat);
 
-	/* Use the line eqation to find and set the best offset value */
+	/* Use the line equation to find and set the best offset value */
 
 	for (i = 0; i < 3; i++) {
 		double m, c; /* y = mx + c */
@@ -640,6 +640,7 @@ int warm_up_scanner(struct gl843_device *dev,
 		ss.width = 10208;
 		ss.start_y = 5; /* Dummy value */
 		ss.height = 16;
+		ss.overscan = 0;
 	} else {
 		DBG(DBG_error, "Only platen scanning is implemented right now.\n");
 		return -1;

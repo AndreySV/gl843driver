@@ -17,6 +17,7 @@
 
 #include <libusb-1.0/libusb.h>
 #include "regs.h"
+#include "convert.h"
 
 struct gl843_device
 {
@@ -25,6 +26,8 @@ struct gl843_device
 	uint8_t *lbuf;		/* line buffer */
 	size_t lbuf_size;	/* bytes in line buffer */
 	size_t lbuf_capacity;	/* bytes allocated */
+
+	struct pixel_converter *pconv;	/* pixel converter */
 
 	unsigned int max_ioreg;	/* Last IO register address */
 	int min_devreg;	/* Smallest devreg enum */
